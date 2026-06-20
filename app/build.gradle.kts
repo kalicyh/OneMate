@@ -5,10 +5,9 @@ plugins {
 android {
     namespace = "com.kalicyh.onemate"
     compileSdk {
-        version = release(36) {
-            minorApiLevel = 1
-        }
+        version = release(37)
     }
+    buildToolsVersion = "37.0.0"
 
     defaultConfig {
         applicationId = "com.kalicyh.onemate"
@@ -31,13 +30,16 @@ android {
         sourceCompatibility = JavaVersion.VERSION_11
         targetCompatibility = JavaVersion.VERSION_11
     }
+    packaging {
+        resources {
+            merges += "META-INF/xposed/*"
+            excludes += "**"
+        }
+    }
 }
 
 dependencies {
-    implementation(libs.androidx.appcompat)
-    implementation(libs.androidx.core.ktx)
-    implementation(libs.material)
+    compileOnly(libs.libxposed.api)
+    implementation(libs.libxposed.service)
     testImplementation(libs.junit)
-    androidTestImplementation(libs.androidx.espresso.core)
-    androidTestImplementation(libs.androidx.junit)
 }
