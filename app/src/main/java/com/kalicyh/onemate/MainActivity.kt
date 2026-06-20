@@ -38,8 +38,10 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
+import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.rounded.MenuOpen
 import androidx.compose.material.icons.rounded.AspectRatio
 import androidx.compose.material.icons.rounded.BlurOn
@@ -50,6 +52,7 @@ import androidx.compose.material.icons.rounded.DesignServices
 import androidx.compose.material.icons.rounded.ErrorOutline
 import androidx.compose.material.icons.rounded.Home
 import androidx.compose.material.icons.rounded.Info
+import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.Palette
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.Style
@@ -72,6 +75,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
@@ -109,20 +113,24 @@ import top.yukonga.miuix.kmp.utils.overScrollVertical
 import top.yukonga.miuix.kmp.utils.scrollEndHaptic
 
 private const val THEME_PREFS = "settings"
+private const val RUNTIME_PREFS = "runtime"
 private const val ROUTE_HOME = 0
-private const val ROUTE_SETTINGS = 1
-private const val ROUTE_THEME_SETTINGS = 2
-private const val ROUTE_ABOUT = 3
+private const val ROUTE_HIDDEN_SETTINGS = 1
+private const val ROUTE_SETTINGS = 2
+private const val ROUTE_THEME_SETTINGS = 3
+private const val ROUTE_ABOUT = 4
 
 class MainActivity : ComponentActivity(), App.ServiceStateListener {
     private var remotePrefs: SharedPreferences? = null
     private lateinit var themePrefs: SharedPreferences
+    private lateinit var runtimePrefs: SharedPreferences
     private var serviceState by mutableStateOf(ServiceUiState())
     private var themeSettings by mutableStateOf(ThemeSettings())
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         themePrefs = getSharedPreferences(THEME_PREFS, Context.MODE_PRIVATE)
+        runtimePrefs = getSharedPreferences(RUNTIME_PREFS, Context.MODE_PRIVATE)
         themeSettings = readThemeSettings(themePrefs)
 
         setContent {
@@ -130,6 +138,9 @@ class MainActivity : ComponentActivity(), App.ServiceStateListener {
                 serviceState = serviceState,
                 themeSettings = themeSettings,
                 onTextEditingEnabledChange = ::setTextEditingEnabled,
+                onHiddenSettingEnabledChange = ::setHiddenSettingEnabled,
+                onRefreshState = ::refreshServiceState,
+                onRestartKeyboard = ::restartSamsungKeyboard,
                 onThemeChange = ::updateThemeSettings,
             )
         }
@@ -138,6 +149,11 @@ class MainActivity : ComponentActivity(), App.ServiceStateListener {
     override fun onStart() {
         super.onStart()
         App.addServiceStateListener(this)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        refreshServiceState()
     }
 
     override fun onStop() {
@@ -164,6 +180,8 @@ class MainActivity : ComponentActivity(), App.ServiceStateListener {
                 inScope = service?.scope?.contains(ToolbarConfig.TARGET_PACKAGE) == true,
                 framework = service?.let { "${it.frameworkName} API ${it.apiVersion}" }.orEmpty(),
                 textEditingEnabled = ToolbarConfig.isTextEditingEnabled(remotePrefs),
+                enabledHiddenSettings = readEffectiveEnabledHiddenSettings(remotePrefs, runtimePrefs),
+                runtimeEnabledHiddenSettings = readRuntimeEnabledHiddenSettings(runtimePrefs),
             )
         } catch (e: RuntimeException) {
             remotePrefs = null
@@ -188,6 +206,59 @@ class MainActivity : ComponentActivity(), App.ServiceStateListener {
         Toast.makeText(this, "已保存", Toast.LENGTH_SHORT).show()
     }
 
+    private fun setHiddenSettingEnabled(key: String, enabled: Boolean) {
+        val prefs = remotePrefs
+        if (prefs == null) {
+            Toast.makeText(this, "LSPosed remote preferences 不可用", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val saved = prefs.edit()
+            .putBoolean(ToolbarConfig.hiddenSettingPrefKey(key), enabled)
+            .commit()
+        if (!saved) {
+            Toast.makeText(this, "保存失败", Toast.LENGTH_SHORT).show()
+            return
+        }
+        serviceState = serviceState.copy(
+            enabledHiddenSettings = readEffectiveEnabledHiddenSettings(prefs, runtimePrefs),
+        )
+        Toast.makeText(this, "已保存，重启三星键盘后生效", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun refreshServiceState() {
+        val prefs = remotePrefs
+        serviceState = serviceState.copy(
+            enabledHiddenSettings = readEffectiveEnabledHiddenSettings(prefs, runtimePrefs),
+            runtimeEnabledHiddenSettings = readRuntimeEnabledHiddenSettings(runtimePrefs),
+        )
+    }
+
+    private fun restartSamsungKeyboard() {
+        Thread {
+            val command = "am force-stop ${ToolbarConfig.TARGET_PACKAGE}"
+            val ok = listOf(
+                arrayOf("su", "-c", command),
+                arrayOf("/system/bin/su", "-c", command),
+                arrayOf("/system/xbin/su", "-c", command),
+                arrayOf("/vendor/bin/su", "-c", command),
+            ).any(::runRootCommand)
+            runOnUiThread {
+                Toast.makeText(
+                    this,
+                    if (ok) "已强制停止三星键盘，点击测试输入框会重新拉起" else "重启失败：SukiSU 未给 OneMate 授权或 su 不可用",
+                    Toast.LENGTH_SHORT,
+                )
+                    .show()
+                refreshServiceState()
+            }
+        }.start()
+    }
+
+    private fun runRootCommand(command: Array<String>): Boolean = runCatching {
+        val process = Runtime.getRuntime().exec(command)
+        process.waitFor() == 0
+    }.getOrDefault(false)
+
     private fun updateThemeSettings(settings: ThemeSettings) {
         themeSettings = settings.normalized()
         saveThemeSettings(themePrefs, themeSettings)
@@ -199,6 +270,9 @@ private fun OneMateApp(
     serviceState: ServiceUiState,
     themeSettings: ThemeSettings,
     onTextEditingEnabledChange: (Boolean) -> Unit,
+    onHiddenSettingEnabledChange: (String, Boolean) -> Unit,
+    onRefreshState: () -> Unit,
+    onRestartKeyboard: () -> Unit,
     onThemeChange: (ThemeSettings) -> Unit,
 ) {
     val activity = LocalContext.current as? ComponentActivity
@@ -222,8 +296,14 @@ private fun OneMateApp(
     CompositionLocalProvider(LocalDensity provides density) {
         OneMateTheme(themeSettings = themeSettings, darkMode = darkMode) {
             var route by remember { mutableIntStateOf(ROUTE_HOME) }
-            val rootPage = if (route == ROUTE_HOME) 0 else 1
-            val showBottomBar = route == ROUTE_HOME || route == ROUTE_SETTINGS
+            val rootPage = when (route) {
+                ROUTE_HOME -> 0
+                ROUTE_HIDDEN_SETTINGS -> 1
+                else -> 2
+            }
+            val showBottomBar = route == ROUTE_HOME ||
+                    route == ROUTE_HIDDEN_SETTINGS ||
+                    route == ROUTE_SETTINGS
             val surfaceColor = MiuixTheme.colorScheme.surface
             val backdrop = rememberLayerBackdrop {
                 drawRect(surfaceColor)
@@ -266,14 +346,27 @@ private fun OneMateApp(
                             item {
                                 Spacer(Modifier.height(12.dp))
                                 when (route) {
-                                    ROUTE_HOME -> HomePage(serviceState, onTextEditingEnabledChange)
+                                    ROUTE_HOME -> HomePage(
+                                        serviceState,
+                                        onTextEditingEnabledChange,
+                                        onRestartKeyboard,
+                                    )
+                                    ROUTE_HIDDEN_SETTINGS -> HiddenSettingsPage(
+                                        serviceState = serviceState,
+                                        onHiddenSettingEnabledChange = onHiddenSettingEnabledChange,
+                                        onRefreshState = onRefreshState,
+                                    )
                                     ROUTE_SETTINGS -> SettingsPage(
                                         onThemeSettingsClick = { route = ROUTE_THEME_SETTINGS },
                                         onAboutClick = { route = ROUTE_ABOUT },
                                     )
                                     ROUTE_THEME_SETTINGS -> ThemeSettingsPage(themeSettings, onThemeChange)
                                     ROUTE_ABOUT -> AboutPage()
-                                    else -> HomePage(serviceState, onTextEditingEnabledChange)
+                                    else -> HomePage(
+                                        serviceState,
+                                        onTextEditingEnabledChange,
+                                        onRestartKeyboard,
+                                    )
                                 }
                                 Spacer(
                                     Modifier.height(
@@ -295,7 +388,13 @@ private fun OneMateApp(
                             floating = themeSettings.enableFloatingBottomBar,
                             glass = themeSettings.enableFloatingBottomBarBlur,
                             backdrop = backdrop,
-                            onPageChange = { route = if (it == 0) ROUTE_HOME else ROUTE_SETTINGS },
+                            onPageChange = {
+                                route = when (it) {
+                                    0 -> ROUTE_HOME
+                                    1 -> ROUTE_HIDDEN_SETTINGS
+                                    else -> ROUTE_SETTINGS
+                                }
+                            },
                         )
                     }
                 }
@@ -344,10 +443,17 @@ private fun OneMateBottomBar(
             )
             NavigationBarItem(
                 modifier = Modifier.weight(1f),
-                icon = Icons.Rounded.Settings,
-                label = "设置",
+                icon = Icons.Rounded.DesignServices,
+                label = "隐藏项",
                 selected = page == 1,
                 onClick = { onPageChange(1) },
+            )
+            NavigationBarItem(
+                modifier = Modifier.weight(1f),
+                icon = Icons.Rounded.Settings,
+                label = "设置",
+                selected = page == 2,
+                onClick = { onPageChange(2) },
             )
         }
         return
@@ -365,12 +471,12 @@ private fun OneMateBottomBar(
         selectedIndex = page,
         onSelected = onPageChange,
         backdrop = backdrop,
-        tabsCount = 2,
+        tabsCount = 3,
         isBlurEnabled = glass,
     ) {
         FloatingBottomBarItem(
             onClick = { onPageChange(0) },
-            modifier = Modifier.defaultMinSize(minWidth = 76.dp),
+            modifier = Modifier.defaultMinSize(minWidth = 68.dp),
         ) {
             Icon(
                 imageVector = Icons.Rounded.Home,
@@ -386,7 +492,23 @@ private fun OneMateBottomBar(
         }
         FloatingBottomBarItem(
             onClick = { onPageChange(1) },
-            modifier = Modifier.defaultMinSize(minWidth = 76.dp),
+            modifier = Modifier.defaultMinSize(minWidth = 68.dp),
+        ) {
+            Icon(
+                imageVector = Icons.Rounded.DesignServices,
+                contentDescription = "隐藏项",
+                tint = MiuixTheme.colorScheme.onSurface,
+            )
+            Text(
+                text = "隐藏项",
+                fontSize = 11.sp,
+                lineHeight = 14.sp,
+                color = MiuixTheme.colorScheme.onSurface,
+            )
+        }
+        FloatingBottomBarItem(
+            onClick = { onPageChange(2) },
+            modifier = Modifier.defaultMinSize(minWidth = 68.dp),
         ) {
             Icon(
                 imageVector = Icons.Rounded.Settings,
@@ -407,14 +529,17 @@ private fun OneMateBottomBar(
 private fun HomePage(
     serviceState: ServiceUiState,
     onTextEditingEnabledChange: (Boolean) -> Unit,
+    onRestartKeyboard: () -> Unit,
 ) {
+    var testText by rememberSaveable { mutableStateOf("") }
+
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         WorkStatusCard(serviceState)
 
         Card(Modifier.fillMaxWidth()) {
             SwitchPreference(
                 title = "启用三星键盘 Text editing",
-                summary = "把旧版文本编辑按钮补回三星键盘工具栏，并显示仿旧版文本编辑面板。",
+                summary = "把旧版文本编辑按钮补回工具栏，并显示三星键盘隐藏实验设置。",
                 startAction = {
                     Icon(
                         Icons.Rounded.TextFields,
@@ -430,11 +555,56 @@ private fun HomePage(
         }
 
         Card(Modifier.fillMaxWidth()) {
+            ArrowPreference(
+                title = "强制重启三星键盘",
+                summary = "使用 root 执行 am force-stop；随后点击下面输入框重新拉起键盘。",
+                onClick = onRestartKeyboard,
+            )
+        }
+
+        Card(Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text("测试输入", fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
+                BasicTextField(
+                    value = testText,
+                    onValueChange = { testText = it },
+                    textStyle = TextStyle(
+                        color = MiuixTheme.colorScheme.onSurface,
+                        fontSize = 18.sp,
+                    ),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .defaultMinSize(minHeight = 56.dp)
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(MiuixTheme.colorScheme.surfaceVariant)
+                        .border(
+                            width = 1.dp,
+                            color = MiuixTheme.colorScheme.outline.copy(alpha = 0.35f),
+                            shape = RoundedCornerShape(14.dp),
+                        )
+                        .padding(horizontal = 16.dp, vertical = 14.dp),
+                    decorationBox = { innerTextField ->
+                        Box(Modifier.fillMaxWidth()) {
+                            if (testText.isEmpty()) {
+                                Text(
+                                    "点击这里测试键盘",
+                                    fontSize = 18.sp,
+                                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                                )
+                            }
+                            innerTextField()
+                        }
+                    },
+                )
+            }
+        }
+
+        Card(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("当前实现", fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
                 Text("Hook 目标：${ToolbarConfig.TARGET_PACKAGE}", fontSize = 14.sp)
                 Text("功能 ID：${ToolbarConfig.TEXT_EDITING_ID}", fontSize = 14.sp)
-                Text("更改开关后重启三星键盘即可生效。", fontSize = 14.sp)
+                Text("更改开关后重启三星键盘，重新打开键盘设置即可生效。", fontSize = 14.sp)
             }
         }
     }
@@ -451,33 +621,40 @@ private fun WorkStatusCard(serviceState: ServiceUiState) {
         !serviceState.inScope -> "三星键盘未加入作用域"
         else -> "需要重启三星键盘"
     }
-    val tint = if (working) MiuixTheme.colorScheme.primary else MiuixTheme.colorScheme.outline
+    val cardColor = if (working) Color(0xFF3F7E54) else MiuixTheme.colorScheme.surfaceVariant
+    val contentColor = if (working) Color.White else MiuixTheme.colorScheme.onSurface
+    val subColor = if (working) Color.White.copy(alpha = 0.78f) else MiuixTheme.colorScheme.onSurfaceVariantSummary
 
-    Card(Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(
-                    modifier = Modifier.size(38.dp),
-                    imageVector = if (working) Icons.Rounded.CheckCircleOutline else Icons.Rounded.ErrorOutline,
-                    contentDescription = null,
-                    tint = tint,
-                )
-                Column(Modifier.padding(start = 12.dp)) {
-                    Text("工作状态", fontSize = 14.sp, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
-                    Text(headline, fontWeight = FontWeight.SemiBold, fontSize = 20.sp)
-                }
-            }
-
-            StatusLine("功能开关", if (serviceState.textEditingEnabled) "已开启" else "已关闭", serviceState.textEditingEnabled)
-            StatusLine("LSPosed", if (serviceState.connected) serviceState.framework else "未连接", serviceState.connected)
-            StatusLine("Remote preferences", if (serviceState.remoteSupported) "可用" else "不可用", serviceState.remoteSupported)
-            StatusLine("Samsung Keyboard scope", if (serviceState.inScope) "已包含" else "未包含", serviceState.inScope)
-
-            if (serviceState.error.isNotEmpty()) {
-                Text(serviceState.error, fontSize = 13.sp, lineHeight = 18.sp, color = MiuixTheme.colorScheme.outline)
-            } else {
-                Text("开启或关闭后重启三星键盘生效。", fontSize = 13.sp, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
-            }
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(158.dp)
+            .clip(RoundedCornerShape(22.dp))
+            .background(cardColor)
+            .padding(20.dp),
+    ) {
+        Icon(
+            modifier = Modifier
+                .size(128.dp)
+                .align(Alignment.BottomEnd),
+            imageVector = if (working) Icons.Rounded.CheckCircleOutline else Icons.Rounded.ErrorOutline,
+            contentDescription = null,
+            tint = if (working) Color(0xFF69F06D).copy(alpha = 0.8f) else MiuixTheme.colorScheme.outline.copy(alpha = 0.35f),
+        )
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text("工作状态", fontSize = 14.sp, color = subColor)
+            Text(headline, fontWeight = FontWeight.SemiBold, fontSize = 22.sp, color = contentColor)
+            Text(
+                if (serviceState.connected) serviceState.framework else "LSPosed 未连接",
+                fontSize = 15.sp,
+                fontWeight = FontWeight.Medium,
+                color = contentColor,
+            )
+            Text(
+                "Remote: ${if (serviceState.remoteSupported) "可用" else "不可用"} / Scope: ${if (serviceState.inScope) "已包含" else "未包含"}",
+                fontSize = 13.sp,
+                color = subColor,
+            )
         }
     }
 }
@@ -502,6 +679,124 @@ private fun StatusLine(
             color = if (ok) MiuixTheme.colorScheme.primary else MiuixTheme.colorScheme.outline,
         )
     }
+}
+
+@Composable
+private fun HiddenSettingsPage(
+    serviceState: ServiceUiState,
+    onHiddenSettingEnabledChange: (String, Boolean) -> Unit,
+    onRefreshState: () -> Unit,
+) {
+    val forceableOptions = hiddenSettingOptions
+        .filterNot { serviceState.runtimeEnabledHiddenSettings.contains(it.key) }
+    val runtimeEnabledOptions = hiddenSettingOptions
+        .filter { serviceState.runtimeEnabledHiddenSettings.contains(it.key) }
+    val forceEnabledCount = forceableOptions.count { serviceState.enabledHiddenSettings.contains(it.key) }
+
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        HiddenSettingSection(
+            title = "可强开",
+            summary = "共 ${forceableOptions.size} 项，${forceEnabledCount} 项已强开",
+            options = forceableOptions,
+            initiallyExpanded = true,
+            serviceState = serviceState,
+            onHiddenSettingEnabledChange = onHiddenSettingEnabledChange,
+        )
+
+        HiddenSettingSection(
+            title = "无需 hook",
+            summary = "共 ${runtimeEnabledOptions.size} 项，当前运行时已正常开启",
+            options = runtimeEnabledOptions,
+            initiallyExpanded = false,
+            serviceState = serviceState,
+            onHiddenSettingEnabledChange = onHiddenSettingEnabledChange,
+        )
+
+        Card(Modifier.fillMaxWidth()) {
+            ArrowPreference(
+                title = "刷新运行时状态",
+                summary = "先打开一次三星键盘设置页，模块会记录每个 key 在当前环境下是否已正常开放。",
+                onClick = onRefreshState,
+            )
+        }
+    }
+}
+
+@Composable
+private fun HiddenSettingSection(
+    title: String,
+    summary: String,
+    options: List<HiddenSettingOption>,
+    initiallyExpanded: Boolean,
+    serviceState: ServiceUiState,
+    onHiddenSettingEnabledChange: (String, Boolean) -> Unit,
+) {
+    var expanded by rememberSaveable(title) { mutableStateOf(initiallyExpanded) }
+
+    Card(Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { expanded = !expanded }
+                .padding(horizontal = 20.dp, vertical = 16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(title, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+                Text(
+                    summary,
+                    fontSize = 14.sp,
+                    lineHeight = 18.sp,
+                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                )
+            }
+            Icon(
+                imageVector = if (expanded) {
+                    Icons.Rounded.KeyboardArrowDown
+                } else {
+                    Icons.AutoMirrored.Rounded.KeyboardArrowRight
+                },
+                contentDescription = null,
+                tint = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+            )
+        }
+        AnimatedVisibility(visible = expanded) {
+            Column {
+                if (options.isEmpty()) {
+                    Text(
+                        "暂无项目",
+                        modifier = Modifier.padding(horizontal = 20.dp, vertical = 16.dp),
+                        fontSize = 14.sp,
+                        color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                    )
+                } else {
+                    options.forEach { option ->
+                        HiddenSettingSwitch(
+                            option = option,
+                            serviceState = serviceState,
+                            onHiddenSettingEnabledChange = onHiddenSettingEnabledChange,
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun HiddenSettingSwitch(
+    option: HiddenSettingOption,
+    serviceState: ServiceUiState,
+    onHiddenSettingEnabledChange: (String, Boolean) -> Unit,
+) {
+    val runtimeEnabled = serviceState.runtimeEnabledHiddenSettings.contains(option.key)
+    SwitchPreference(
+        title = option.title,
+        summary = "${option.key}\n条件：${option.condition}\n状态：${if (runtimeEnabled) "当前运行时已正常开启，无需 hook" else "当前运行时未开放，可用模块强开"}",
+        checked = runtimeEnabled || serviceState.enabledHiddenSettings.contains(option.key),
+        enabled = serviceState.remoteSupported && !runtimeEnabled,
+        onCheckedChange = { onHiddenSettingEnabledChange(option.key, it) },
+    )
 }
 
 @Composable
@@ -878,6 +1173,8 @@ private data class ServiceUiState(
     val inScope: Boolean = false,
     val framework: String = "",
     val textEditingEnabled: Boolean = false,
+    val enabledHiddenSettings: Set<String> = emptySet(),
+    val runtimeEnabledHiddenSettings: Set<String> = emptySet(),
     val error: String = "",
 ) {
     val ready: Boolean
@@ -892,8 +1189,113 @@ private data class ServiceUiState(
                 append("\nRemote preferences: ").append(if (remoteSupported) "可用" else "不可用")
                 append("\nSamsung Keyboard scope: ").append(if (inScope) "已包含" else "未包含")
             }
-        }
+    }
 }
+
+private data class HiddenSettingOption(
+    val key: String,
+    val title: String,
+    val condition: String,
+)
+
+private fun readEnabledHiddenSettings(prefs: SharedPreferences?): Set<String> {
+    if (prefs == null) return emptySet()
+    return hiddenSettingOptions
+        .map { it.key }
+        .filter { prefs.getBoolean(ToolbarConfig.hiddenSettingPrefKey(it), false) }
+        .toSet()
+}
+
+private fun readEffectiveEnabledHiddenSettings(
+    remotePrefs: SharedPreferences?,
+    runtimePrefs: SharedPreferences,
+): Set<String> = readEnabledHiddenSettings(remotePrefs) - readRuntimeEnabledHiddenSettings(runtimePrefs)
+
+private fun readRuntimeEnabledHiddenSettings(prefs: SharedPreferences?): Set<String> {
+    if (prefs == null) return emptySet()
+    return hiddenSettingOptions
+        .map { it.key }
+        .filter { prefs.getBoolean(ToolbarConfig.runtimeEnabledPrefKey(it), false) }
+        .toSet()
+}
+
+private val hiddenSettingOptions = listOf(
+    HiddenSettingOption(
+        "SETTINGS_SHOW_SMS_OTP",
+        "显示要输入的短信验证码",
+        "依赖短信 OTP/系统智能提取服务，可能受地区和隐私策略限制。",
+    ),
+    HiddenSettingOption(
+        "SETTINGS_SPECIFIC_ASSIST",
+        "聊天室推荐权重",
+        "韩文内部调试项，依赖聊天推荐/候选词服务。",
+    ),
+    HiddenSettingOption(
+        "SETTINGS_TOUCH_EVENT_RECORD",
+        "Touch event test",
+        "开发触控采样测试项，需要同步显示 Touch event category。",
+    ),
+    HiddenSettingOption(
+        "SETTINGS_WRITING_ASSIST",
+        "Writing Assist",
+        "依赖 Galaxy AI、三星账号、地区策略和模型开关。",
+    ),
+    HiddenSettingOption(
+        "SETTINGS_DRAWING_ASSIST",
+        "Drawing Assist",
+        "依赖 Galaxy AI、设备能力和地区策略。",
+    ),
+    HiddenSettingOption(
+        "SETTINGS_WRITING_ASSIST_TRANSLATION",
+        "Writing Assist Translation",
+        "依赖写作助手和翻译服务可用性。",
+    ),
+    HiddenSettingOption(
+        "SETTINGS_VOICE_INPUT",
+        "语音输入",
+        "依赖语音输入服务、地区策略和默认输入法状态。",
+    ),
+    HiddenSettingOption(
+        "SETTINGS_DEFAULT_HWR_ON",
+        "手写",
+        "依赖手写语言包和当前输入语言。",
+    ),
+    HiddenSettingOption(
+        "settings_direct_writing",
+        "S Pen 直写",
+        "依赖 S Pen/支持机型，部分 Knox 或安全模式下会隐藏。",
+    ),
+    HiddenSettingOption(
+        "SETTINGS_SAVE_SCREENSHOTS_TO_CLIPBOARD",
+        "截图保存到剪贴板",
+        "依赖剪贴板、截图能力和系统策略。",
+    ),
+    HiddenSettingOption(
+        "SETTINGS_PHYSICAL_KEYBOARD_TOOLBAR",
+        "实体键盘工具栏",
+        "依赖外接键盘或硬件键盘模式。",
+    ),
+    HiddenSettingOption(
+        "SETTINGS_SHOW_BUTTON_TO_HIDE_KEYBOARD_RELATIVE_LINK",
+        "隐藏键盘按钮相关链接",
+        "Knox/Secure Folder 或部分导航模式下会隐藏。",
+    ),
+    HiddenSettingOption(
+        "japanese_input_options",
+        "日语输入选项",
+        "需要已添加日语输入语言。",
+    ),
+    HiddenSettingOption(
+        "enhanced_prediction",
+        "中文增强预测",
+        "依赖中文输入、地区和预测引擎。",
+    ),
+    HiddenSettingOption(
+        "selected_language_download_cue",
+        "语言包下载提示",
+        "依赖语言包下载/更新服务状态。",
+    ),
+)
 
 private data class ThemeSettings(
     val colorMode: Int = ColorMode.SYSTEM.value,

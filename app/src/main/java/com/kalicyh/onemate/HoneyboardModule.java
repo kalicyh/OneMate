@@ -8,6 +8,7 @@ import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.Icon;
 import android.inputmethodservice.InputMethodService;
+import android.content.Intent;
 import android.os.SystemClock;
 import android.util.Log;
 import android.util.TypedValue;
@@ -63,6 +64,8 @@ public final class HoneyboardModule extends XposedModule {
     private static final String BOARD_CREATOR_INTERFACE_CLASS = "T6.D";
     private static final String BOARD_INTERFACE_CLASS = "T6.b";
     private static final String BOARD_REQUEST_INFO_CLASS = "T6.F";
+    private static final String SETTINGS_FRAGMENT_CLASS =
+            "com.samsung.android.honeyboard.settings.common.CommonSettingsFragmentCompat";
     private static final String R_CLASS = "com.samsung.android.honeyboard.R";
     private static final String TEXT_EDITING_ID = "text_editing";
     private static final String TEXT_EDITING_BOARD_ID = "onemate_text_editing_board";
@@ -101,6 +104,7 @@ public final class HoneyboardModule extends XposedModule {
         hookBoardConfig(classLoader);
         hookBoardRequester(classLoader);
         hookEditorOverlay(classLoader);
+        hookHiddenSettings(classLoader);
     }
 
     @Override
@@ -396,10 +400,81 @@ public final class HoneyboardModule extends XposedModule {
         }
     }
 
+    private void hookHiddenSettings(ClassLoader classLoader) {
+        try {
+            Class<?> settingsClass = Class.forName(SETTINGS_FRAGMENT_CLASS, false, classLoader);
+            Method method = settingsClass.getDeclaredMethod("isPreferenceVisible", String.class);
+            method.setAccessible(true);
+            hook(method)
+                    .setId("show-hidden-keyboard-settings")
+                    .setExceptionMode(ExceptionMode.PROTECTIVE)
+                    .intercept(chain -> {
+                        Object preferenceKey = chain.getArg(0);
+                        Object result = chain.proceed();
+                        boolean runtimeEnabled = result instanceof Boolean && (Boolean) result;
+                        publishHiddenSettingRuntimeEnabled(chain.getThisObject(), preferenceKey, runtimeEnabled);
+                        if (!runtimeEnabled && shouldForceSettingsPreferenceVisible(preferenceKey)) {
+                            return true;
+                        }
+                        return result;
+                    });
+            log(Log.INFO, TAG, "hooked " + SETTINGS_FRAGMENT_CLASS + "#isPreferenceVisible");
+        } catch (ClassNotFoundException | NoSuchMethodException e) {
+            log(Log.DEBUG, TAG, "skip missing keyboard settings hook");
+        } catch (Throwable t) {
+            log(Log.ERROR, TAG, "failed to hook keyboard settings visibility", t);
+        }
+    }
+
     private boolean shouldForceVisible(Object beeId) {
         return beeId instanceof String
                 && ToolbarConfig.isTextEditingEnabled(prefs)
                 && TEXT_EDITING_ID.equals(beeId);
+    }
+
+    private boolean shouldForceSettingsPreferenceVisible(Object preferenceKey) {
+        return ToolbarConfig.shouldForceSettingsPreference(prefs, preferenceKey);
+    }
+
+    private void publishHiddenSettingRuntimeEnabled(
+            Object source, Object preferenceKey, boolean runtimeEnabled) {
+        if (!(preferenceKey instanceof String)
+                || !ToolbarConfig.isKnownHiddenSetting((String) preferenceKey)) {
+            return;
+        }
+        Context context = contextFrom(source);
+        if (context == null) {
+            return;
+        }
+        Intent intent = new Intent(ToolbarConfig.ACTION_HIDDEN_SETTING_RUNTIME)
+                .setClassName("com.kalicyh.onemate", "com.kalicyh.onemate.HiddenSettingsStateReceiver")
+                .putExtra(ToolbarConfig.EXTRA_HIDDEN_SETTING_KEY, (String) preferenceKey)
+                .putExtra(ToolbarConfig.EXTRA_HIDDEN_SETTING_RUNTIME_ENABLED, runtimeEnabled);
+        context.sendBroadcast(intent);
+    }
+
+    private Context contextFrom(Object source) {
+        if (source instanceof Context) {
+            return (Context) source;
+        }
+        if (source == null) {
+            return null;
+        }
+        Context context = invokeContextMethod(source, "getContext");
+        if (context != null) {
+            return context;
+        }
+        return invokeContextMethod(source, "getActivity");
+    }
+
+    private Context invokeContextMethod(Object source, String methodName) {
+        try {
+            Method method = source.getClass().getMethod(methodName);
+            Object result = method.invoke(source);
+            return result instanceof Context ? (Context) result : null;
+        } catch (Throwable ignored) {
+            return null;
+        }
     }
 
     private void syncEditorOverlay(Object serviceObject) {
