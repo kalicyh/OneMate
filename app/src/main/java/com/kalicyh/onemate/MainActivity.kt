@@ -6,6 +6,7 @@ import android.graphics.Color as AndroidColor
 import android.os.Build
 import android.os.Bundle
 import android.widget.Toast
+import java.io.File
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
@@ -114,6 +115,8 @@ import top.yukonga.miuix.kmp.utils.scrollEndHaptic
 
 private const val THEME_PREFS = "settings"
 private const val RUNTIME_PREFS = "runtime"
+private const val CONFIG_ARCHIVE_PREFS = "config_archive"
+private const val CONFIG_ARCHIVE_SAVED = "saved"
 private const val ROUTE_HOME = 0
 private const val ROUTE_HIDDEN_SETTINGS = 1
 private const val ROUTE_SETTINGS = 2
@@ -124,6 +127,7 @@ class MainActivity : ComponentActivity(), App.ServiceStateListener {
     private var remotePrefs: SharedPreferences? = null
     private lateinit var themePrefs: SharedPreferences
     private lateinit var runtimePrefs: SharedPreferences
+    private lateinit var configArchivePrefs: SharedPreferences
     private var serviceState by mutableStateOf(ServiceUiState())
     private var themeSettings by mutableStateOf(ThemeSettings())
 
@@ -131,6 +135,7 @@ class MainActivity : ComponentActivity(), App.ServiceStateListener {
         super.onCreate(savedInstanceState)
         themePrefs = getSharedPreferences(THEME_PREFS, Context.MODE_PRIVATE)
         runtimePrefs = getSharedPreferences(RUNTIME_PREFS, Context.MODE_PRIVATE)
+        configArchivePrefs = getSharedPreferences(CONFIG_ARCHIVE_PREFS, Context.MODE_PRIVATE)
         themeSettings = readThemeSettings(themePrefs)
 
         setContent {
@@ -138,9 +143,12 @@ class MainActivity : ComponentActivity(), App.ServiceStateListener {
                 serviceState = serviceState,
                 themeSettings = themeSettings,
                 onTextEditingEnabledChange = ::setTextEditingEnabled,
+                onToolbarBadgesDisabledChange = ::setToolbarBadgesDisabled,
                 onHiddenSettingEnabledChange = ::setHiddenSettingEnabled,
                 onRefreshState = ::refreshServiceState,
                 onRestartKeyboard = ::restartSamsungKeyboard,
+                onSaveConfigArchive = ::saveConfigArchive,
+                onRestoreConfigArchive = ::restoreConfigArchive,
                 onThemeChange = ::updateThemeSettings,
             )
         }
@@ -180,6 +188,7 @@ class MainActivity : ComponentActivity(), App.ServiceStateListener {
                 inScope = service?.scope?.contains(ToolbarConfig.TARGET_PACKAGE) == true,
                 framework = service?.let { "${it.frameworkName} API ${it.apiVersion}" }.orEmpty(),
                 textEditingEnabled = ToolbarConfig.isTextEditingEnabled(remotePrefs),
+                toolbarBadgesDisabled = ToolbarConfig.areToolbarBadgesDisabled(remotePrefs),
                 enabledHiddenSettings = readEffectiveEnabledHiddenSettings(remotePrefs, runtimePrefs),
                 runtimeEnabledHiddenSettings = readRuntimeEnabledHiddenSettings(runtimePrefs),
             )
@@ -206,6 +215,23 @@ class MainActivity : ComponentActivity(), App.ServiceStateListener {
         Toast.makeText(this, "已保存", Toast.LENGTH_SHORT).show()
     }
 
+    private fun setToolbarBadgesDisabled(disabled: Boolean) {
+        val prefs = remotePrefs
+        if (prefs == null) {
+            Toast.makeText(this, "LSPosed remote preferences 不可用", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val saved = prefs.edit()
+            .putBoolean(ToolbarConfig.KEY_DISABLE_TOOLBAR_BADGES, disabled)
+            .commit()
+        if (!saved) {
+            Toast.makeText(this, "保存失败", Toast.LENGTH_SHORT).show()
+            return
+        }
+        serviceState = serviceState.copy(toolbarBadgesDisabled = disabled)
+        Toast.makeText(this, "已保存，重启三星键盘后生效", Toast.LENGTH_SHORT).show()
+    }
+
     private fun setHiddenSettingEnabled(key: String, enabled: Boolean) {
         val prefs = remotePrefs
         if (prefs == null) {
@@ -228,6 +254,7 @@ class MainActivity : ComponentActivity(), App.ServiceStateListener {
     private fun refreshServiceState() {
         val prefs = remotePrefs
         serviceState = serviceState.copy(
+            toolbarBadgesDisabled = ToolbarConfig.areToolbarBadgesDisabled(prefs),
             enabledHiddenSettings = readEffectiveEnabledHiddenSettings(prefs, runtimePrefs),
             runtimeEnabledHiddenSettings = readRuntimeEnabledHiddenSettings(runtimePrefs),
         )
@@ -259,6 +286,115 @@ class MainActivity : ComponentActivity(), App.ServiceStateListener {
         process.waitFor() == 0
     }.getOrDefault(false)
 
+    private fun saveConfigArchive() {
+        val prefs = remotePrefs
+        if (prefs == null) {
+            Toast.makeText(this, "LSPosed remote preferences 不可用", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val editor = configArchivePrefs.edit()
+        configArchiveKeys.forEach { key -> editor.putBoolean(key, prefs.getBoolean(key, false)) }
+        editor.putBoolean(CONFIG_ARCHIVE_SAVED, true)
+        if (!editor.commit()) {
+            Toast.makeText(this, "保存失败", Toast.LENGTH_SHORT).show()
+            return
+        }
+        Thread {
+            val ok = runRootShell(samsungKeyboardBackupCommand())
+            runOnUiThread {
+                Toast.makeText(
+                    this,
+                    if (ok) "已保存当前配置" else "模块配置已保存，三星键盘配置备份失败：请确认 root 授权并先打开过三星键盘",
+                    Toast.LENGTH_SHORT,
+                ).show()
+            }
+        }.start()
+    }
+
+    private fun restoreConfigArchive() {
+        val prefs = remotePrefs
+        if (prefs == null) {
+            Toast.makeText(this, "LSPosed remote preferences 不可用", Toast.LENGTH_SHORT).show()
+            return
+        }
+        if (!configArchivePrefs.getBoolean(CONFIG_ARCHIVE_SAVED, false)) {
+            Toast.makeText(this, "还没有保存过配置", Toast.LENGTH_SHORT).show()
+            return
+        }
+        Thread {
+            val keyboardOk = runRootShell(samsungKeyboardRestoreCommand())
+            val editor = prefs.edit()
+            configArchiveKeys.forEach { key -> editor.putBoolean(key, configArchivePrefs.getBoolean(key, false)) }
+            val moduleOk = editor.commit()
+            runOnUiThread {
+                refreshServiceState()
+                Toast.makeText(
+                    this,
+                    when {
+                        keyboardOk && moduleOk -> "已恢复当前配置，重启三星键盘后生效"
+                        moduleOk -> "模块配置已恢复，三星键盘配置恢复失败：请确认 root 授权并已保存过键盘配置"
+                        else -> "恢复失败"
+                    },
+                    Toast.LENGTH_SHORT,
+                ).show()
+            }
+        }.start()
+    }
+
+    private fun runRootShell(command: String): Boolean = listOf(
+        arrayOf("su", "-c", command),
+        arrayOf("/system/bin/su", "-c", command),
+        arrayOf("/system/xbin/su", "-c", command),
+        arrayOf("/vendor/bin/su", "-c", command),
+    ).any(::runRootCommand)
+
+    private fun samsungKeyboardArchivePath(name: String): String =
+        File(File(filesDir, "samsung_keyboard_config"), "$name.tar").absolutePath
+
+    private fun samsungKeyboardBackupCommand(): String {
+        val archiveDir = File(filesDir, "samsung_keyboard_config").absolutePath
+        return """
+            set -e
+            rm -rf "$archiveDir"
+            mkdir -p "$archiveDir"
+            for pair in ce:/data/user/0/${ToolbarConfig.TARGET_PACKAGE} de:/data/user_de/0/${ToolbarConfig.TARGET_PACKAGE}; do
+              name="${'$'}{pair%%:*}"
+              src="${'$'}{pair#*:}"
+              [ -d "${'$'}src" ] || continue
+              items=""
+              for d in shared_prefs databases no_backup files; do
+                [ -e "${'$'}src/${'$'}d" ] && items="${'$'}items ${'$'}d"
+              done
+              [ -n "${'$'}items" ] && tar -C "${'$'}src" -cf "$archiveDir/${'$'}name.tar" ${'$'}items
+            done
+            [ -f "$archiveDir/ce.tar" ] || [ -f "$archiveDir/de.tar" ]
+        """.trimIndent()
+    }
+
+    private fun samsungKeyboardRestoreCommand(): String {
+        val ceArchive = samsungKeyboardArchivePath("ce")
+        val deArchive = samsungKeyboardArchivePath("de")
+        return """
+            set -e
+            [ -f "$ceArchive" ] || [ -f "$deArchive" ]
+            am force-stop ${ToolbarConfig.TARGET_PACKAGE} || true
+            for pair in ce:$ceArchive:/data/user/0/${ToolbarConfig.TARGET_PACKAGE} de:$deArchive:/data/user_de/0/${ToolbarConfig.TARGET_PACKAGE}; do
+              name="${'$'}{pair%%:*}"
+              rest="${'$'}{pair#*:}"
+              archive="${'$'}{rest%%:*}"
+              dst="${'$'}{rest#*:}"
+              [ -f "${'$'}archive" ] || continue
+              [ -d "${'$'}dst" ] || continue
+              tar -C "${'$'}dst" -xf "${'$'}archive"
+              uid=${'$'}(stat -c %u "${'$'}dst" 2>/dev/null || ls -ldn "${'$'}dst" | awk '{print ${'$'}3}')
+              gid=${'$'}(stat -c %g "${'$'}dst" 2>/dev/null || ls -ldn "${'$'}dst" | awk '{print ${'$'}4}')
+              chown -R "${'$'}uid:${'$'}gid" "${'$'}dst"/shared_prefs "${'$'}dst"/databases "${'$'}dst"/no_backup "${'$'}dst"/files 2>/dev/null || true
+              restorecon -R "${'$'}dst"/shared_prefs "${'$'}dst"/databases "${'$'}dst"/no_backup "${'$'}dst"/files 2>/dev/null || true
+            done
+            am force-stop ${ToolbarConfig.TARGET_PACKAGE} || true
+        """.trimIndent()
+    }
+
     private fun updateThemeSettings(settings: ThemeSettings) {
         themeSettings = settings.normalized()
         saveThemeSettings(themePrefs, themeSettings)
@@ -270,9 +406,12 @@ private fun OneMateApp(
     serviceState: ServiceUiState,
     themeSettings: ThemeSettings,
     onTextEditingEnabledChange: (Boolean) -> Unit,
+    onToolbarBadgesDisabledChange: (Boolean) -> Unit,
     onHiddenSettingEnabledChange: (String, Boolean) -> Unit,
     onRefreshState: () -> Unit,
     onRestartKeyboard: () -> Unit,
+    onSaveConfigArchive: () -> Unit,
+    onRestoreConfigArchive: () -> Unit,
     onThemeChange: (ThemeSettings) -> Unit,
 ) {
     val activity = LocalContext.current as? ComponentActivity
@@ -349,6 +488,7 @@ private fun OneMateApp(
                                     ROUTE_HOME -> HomePage(
                                         serviceState,
                                         onTextEditingEnabledChange,
+                                        onToolbarBadgesDisabledChange,
                                         onRestartKeyboard,
                                     )
                                     ROUTE_HIDDEN_SETTINGS -> HiddenSettingsPage(
@@ -357,6 +497,8 @@ private fun OneMateApp(
                                         onRefreshState = onRefreshState,
                                     )
                                     ROUTE_SETTINGS -> SettingsPage(
+                                        onSaveConfigArchive = onSaveConfigArchive,
+                                        onRestoreConfigArchive = onRestoreConfigArchive,
                                         onThemeSettingsClick = { route = ROUTE_THEME_SETTINGS },
                                         onAboutClick = { route = ROUTE_ABOUT },
                                     )
@@ -365,6 +507,7 @@ private fun OneMateApp(
                                     else -> HomePage(
                                         serviceState,
                                         onTextEditingEnabledChange,
+                                        onToolbarBadgesDisabledChange,
                                         onRestartKeyboard,
                                     )
                                 }
@@ -529,6 +672,7 @@ private fun OneMateBottomBar(
 private fun HomePage(
     serviceState: ServiceUiState,
     onTextEditingEnabledChange: (Boolean) -> Unit,
+    onToolbarBadgesDisabledChange: (Boolean) -> Unit,
     onRestartKeyboard: () -> Unit,
 ) {
     var testText by rememberSaveable { mutableStateOf("") }
@@ -551,6 +695,13 @@ private fun HomePage(
                 checked = serviceState.textEditingEnabled,
                 enabled = serviceState.remoteSupported,
                 onCheckedChange = onTextEditingEnabledChange,
+            )
+            SwitchPreference(
+                title = "禁用工具栏红点",
+                summary = "拦截工具栏 BeeItem 的新功能徽标，包含表情里的 AI 生成图片红点。",
+                checked = serviceState.toolbarBadgesDisabled,
+                enabled = serviceState.remoteSupported,
+                onCheckedChange = onToolbarBadgesDisabledChange,
             )
         }
 
@@ -801,10 +952,24 @@ private fun HiddenSettingSwitch(
 
 @Composable
 private fun SettingsPage(
+    onSaveConfigArchive: () -> Unit,
+    onRestoreConfigArchive: () -> Unit,
     onThemeSettingsClick: () -> Unit,
     onAboutClick: () -> Unit,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Card(Modifier.fillMaxWidth()) {
+            ArrowPreference(
+                title = "保存当前配置",
+                summary = "保存三星键盘设置、模糊音等内部配置，以及 OneMate 模块开关。",
+                onClick = onSaveConfigArchive,
+            )
+            ArrowPreference(
+                title = "恢复已保存配置",
+                summary = "清空三星键盘数据后，可一键写回键盘配置和模块开关。",
+                onClick = onRestoreConfigArchive,
+            )
+        }
         Card(Modifier.fillMaxWidth()) {
             ArrowPreference(
                 title = "主题设置",
@@ -1173,6 +1338,7 @@ private data class ServiceUiState(
     val inScope: Boolean = false,
     val framework: String = "",
     val textEditingEnabled: Boolean = false,
+    val toolbarBadgesDisabled: Boolean = false,
     val enabledHiddenSettings: Set<String> = emptySet(),
     val runtimeEnabledHiddenSettings: Set<String> = emptySet(),
     val error: String = "",
@@ -1218,6 +1384,13 @@ private fun readRuntimeEnabledHiddenSettings(prefs: SharedPreferences?): Set<Str
         .filter { prefs.getBoolean(ToolbarConfig.runtimeEnabledPrefKey(it), false) }
         .toSet()
 }
+
+private val configArchiveKeys: List<String>
+    get() = buildList {
+        add(ToolbarConfig.KEY_FORCE_TEXT_EDITING)
+        add(ToolbarConfig.KEY_DISABLE_TOOLBAR_BADGES)
+        hiddenSettingOptions.forEach { add(ToolbarConfig.hiddenSettingPrefKey(it.key)) }
+    }
 
 private val hiddenSettingOptions = listOf(
     HiddenSettingOption(

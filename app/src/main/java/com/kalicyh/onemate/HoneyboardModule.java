@@ -101,6 +101,7 @@ public final class HoneyboardModule extends XposedModule {
         hookBeeWorldRegistration(classLoader);
         hookBeeLookup(classLoader);
         hookBeeItemVisibility(classLoader);
+        hookBeeBadges(classLoader);
         hookBoardConfig(classLoader);
         hookBoardRequester(classLoader);
         hookEditorOverlay(classLoader);
@@ -218,7 +219,7 @@ public final class HoneyboardModule extends XposedModule {
                     .intercept(chain -> {
                         Object result = chain.proceed();
                         String beeId = readStringMethod(chain.getThisObject(), "getBeeId");
-                        if (shouldForceVisible(beeId)) {
+                        if (shouldForceVisible(beeId) && !isBeeHiveBlocked(chain.getThisObject())) {
                             return VISIBILITY_VISIBLE;
                         }
                         return result;
@@ -228,6 +229,39 @@ public final class HoneyboardModule extends XposedModule {
             log(Log.DEBUG, TAG, "skip missing bee item visibility hook");
         } catch (Throwable t) {
             log(Log.ERROR, TAG, "failed to hook bee item visibility", t);
+        }
+    }
+
+    private void hookBeeBadges(ClassLoader classLoader) {
+        try {
+            Class<?> beeItemClass = Class.forName(BEE_ITEM_CLASS, false, classLoader);
+            Method isNew = beeItemClass.getDeclaredMethod("isNew");
+            isNew.setAccessible(true);
+            hook(isNew)
+                    .setId("disable-bee-badge-new")
+                    .setExceptionMode(ExceptionMode.PROTECTIVE)
+                    .intercept(chain -> ToolbarConfig.areToolbarBadgesDisabled(prefs)
+                            ? Boolean.FALSE
+                            : chain.proceed());
+
+            Method updateBadge = beeItemClass.getDeclaredMethod("updateBadgeInternal", boolean.class);
+            updateBadge.setAccessible(true);
+            hook(updateBadge)
+                    .setId("disable-bee-badge-view")
+                    .setExceptionMode(ExceptionMode.PROTECTIVE)
+                    .intercept(chain -> {
+                        if (ToolbarConfig.areToolbarBadgesDisabled(prefs)
+                                && Boolean.TRUE.equals(chain.getArg(0))) {
+                            updateBadge.invoke(chain.getThisObject(), false);
+                            return null;
+                        }
+                        return chain.proceed();
+                    });
+            log(Log.INFO, TAG, "hooked " + BEE_ITEM_CLASS + " badges");
+        } catch (ClassNotFoundException | NoSuchMethodException e) {
+            log(Log.DEBUG, TAG, "skip missing bee badge hook");
+        } catch (Throwable t) {
+            log(Log.ERROR, TAG, "failed to hook bee badges", t);
         }
     }
 
@@ -430,6 +464,18 @@ public final class HoneyboardModule extends XposedModule {
         return beeId instanceof String
                 && ToolbarConfig.isTextEditingEnabled(prefs)
                 && TEXT_EDITING_ID.equals(beeId);
+    }
+
+    private boolean isBeeHiveBlocked(Object beeItem) {
+        try {
+            Object handler = callNoArg(beeItem, "getBeeHiveHandler");
+            Field field = handler.getClass().getDeclaredField("f10660b");
+            field.setAccessible(true);
+            Object value = field.get(handler);
+            return value instanceof java.util.Collection && !((java.util.Collection<?>) value).isEmpty();
+        } catch (Throwable ignored) {
+            return false;
+        }
     }
 
     private boolean shouldForceSettingsPreferenceVisible(Object preferenceKey) {
@@ -1031,6 +1077,19 @@ public final class HoneyboardModule extends XposedModule {
             isSelected = false;
         }
 
+        private void notifyChanged() {
+            if (callback == null) {
+                return;
+            }
+            for (String methodName : new String[]{"c", "j"}) {
+                try {
+                    Method method = callback.getClass().getMethod(methodName);
+                    method.invoke(callback);
+                } catch (Throwable ignored) {
+                }
+            }
+        }
+
         @Override
         public Object invoke(Object proxy, Method method, Object[] args) throws Throwable {
             String name = method.getName();
@@ -1108,9 +1167,11 @@ public final class HoneyboardModule extends XposedModule {
                 if (isTextEditingBoardActive()) {
                     hideTextEditingBoard(null);
                     isSelected = false;
+                    notifyChanged();
                     handled = true;
                 } else if (requestTextEditingBoard()) {
                     isSelected = true;
+                    notifyChanged();
                     shown = true;
                     handled = true;
                 }
@@ -1123,9 +1184,11 @@ public final class HoneyboardModule extends XposedModule {
                     if (overlay.isShown()) {
                         overlay.dismissAll();
                         isSelected = false;
+                        notifyChanged();
                     } else {
                         shown = overlay.showPanel(service);
                         isSelected = shown;
+                        notifyChanged();
                     }
                 }
                 if (args != null && args.length == 1 && args[0] != null) {
@@ -1407,7 +1470,7 @@ public final class HoneyboardModule extends XposedModule {
             }
             int preferred = dp(context, 320);
             int max = Math.max(min, screenHeight / 2);
-            return Math.min(preferred, max);
+            return Math.min(preferred, max) - dp(context, 42);
         }
 
         private void removePanel() {
@@ -1428,45 +1491,9 @@ public final class HoneyboardModule extends XposedModule {
             root.setPadding(dp(service, 10), dp(service, 6), dp(service, 10), dp(service, 4));
             root.setBackgroundColor(colors.background);
 
-            root.addView(header(service, colors), new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, dp(service, 42)));
-
             root.addView(legacyControls(service, colors), new LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
             return root;
-        }
-
-        private View header(InputMethodService service, PanelColors colors) {
-            LinearLayout header = new LinearLayout(service);
-            header.setGravity(Gravity.CENTER_VERTICAL);
-            header.setOrientation(LinearLayout.HORIZONTAL);
-
-            ImageView icon = new ImageView(service);
-            Drawable iconDrawable = moduleDrawable(service, "ic_toolbar_text_edit_panel");
-            if (iconDrawable != null) {
-                icon.setImageDrawable(iconDrawable);
-                icon.setColorFilter(colors.text);
-            }
-            header.addView(icon, new LinearLayout.LayoutParams(dp(service, 24), dp(service, 24)));
-
-            View divider = new View(service);
-            divider.setBackgroundColor(blend(colors.background, colors.text, 0.45f));
-            LinearLayout.LayoutParams dividerParams = new LinearLayout.LayoutParams(
-                    dp(service, 1), dp(service, 24));
-            dividerParams.setMargins(dp(service, 12), 0, dp(service, 12), 0);
-            header.addView(divider, dividerParams);
-
-            TextView title = new TextView(service);
-            int titleId = service.getResources().getIdentifier(
-                    "text_editing", "string", service.getPackageName());
-            title.setText(titleId == 0 ? "Text editing" : service.getString(titleId));
-            title.setTextColor(colors.text);
-            title.setTextSize(18);
-            title.setGravity(Gravity.CENTER_VERTICAL);
-            LinearLayout.LayoutParams titleParams = new LinearLayout.LayoutParams(
-                    0, ViewGroup.LayoutParams.MATCH_PARENT, 1f);
-            header.addView(title, titleParams);
-            return header;
         }
 
         private View legacyControls(InputMethodService service, PanelColors colors) {
@@ -1480,9 +1507,9 @@ public final class HoneyboardModule extends XposedModule {
             LinearLayout sideGroup = new LinearLayout(service);
             sideGroup.setOrientation(LinearLayout.VERTICAL);
             sideGroup.setBackground(roundRect(colors.button, dp(service, 8)));
-            addSideRow(sideGroup, "Cut", () -> menuAction(service, android.R.id.cut), colors);
-            addSideRow(sideGroup, "Copy", () -> menuAction(service, android.R.id.copy), colors);
-            addSideRow(sideGroup, "Paste", () -> menuAction(service, android.R.id.paste), colors);
+            addSideRow(sideGroup, "剪切", () -> menuAction(service, android.R.id.cut), colors);
+            addSideRow(sideGroup, "复制", () -> menuAction(service, android.R.id.copy), colors);
+            addSideRow(sideGroup, "粘贴", () -> menuAction(service, android.R.id.paste), colors);
             addPercent(controls, sideGroup, 0.7083f, 0f, 0.2556f, 0.612f);
 
             addPercent(controls, iconButton(service, "ic_textedit_up",
@@ -1498,7 +1525,7 @@ public final class HoneyboardModule extends XposedModule {
                             () -> move(service, KeyEvent.KEYCODE_DPAD_DOWN), colors, false),
                     0.2389f, 0.536f, 0.2389f, 0.288f);
 
-            Button select = panelButton(service, "Select", 16, colors);
+            Button select = panelButton(service, "选择", 16, colors);
             select.setOnClickListener(v -> {
                 selectMode = !selectMode;
                 selectionAnchor = selectMode ? selectionEnd(service) : -1;
@@ -1515,7 +1542,7 @@ public final class HoneyboardModule extends XposedModule {
             addPercent(controls, iconButton(service, "ic_textedit_home",
                             () -> move(service, KeyEvent.KEYCODE_MOVE_HOME), colors, false),
                     0.069f, 0.868f, 0.0667f, 0.096f);
-            addPercent(controls, textActionButton(service, "Select all",
+            addPercent(controls, textActionButton(service, "全选",
                             () -> menuAction(service, android.R.id.selectAll), colors, 15),
                     0.183f, 0.868f, 0.353f, 0.096f);
             addPercent(controls, iconButton(service, "ic_textedit_end",

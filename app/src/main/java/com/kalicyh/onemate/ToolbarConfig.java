@@ -10,6 +10,7 @@ final class ToolbarConfig {
     static final String EXTRA_HIDDEN_SETTING_KEY = "key";
     static final String EXTRA_HIDDEN_SETTING_RUNTIME_ENABLED = "enabled";
     static final String KEY_FORCE_TEXT_EDITING = "force_text_editing";
+    static final String KEY_DISABLE_TOOLBAR_BADGES = "disable_toolbar_badges";
     static final String TEXT_EDITING_ID = "text_editing";
     static final String[] HIDDEN_SETTING_KEYS = {
             "SETTINGS_SHOW_SMS_OTP",
@@ -38,6 +39,10 @@ final class ToolbarConfig {
 
     static boolean isTextEditingEnabled(SharedPreferences prefs) {
         return prefs != null && prefs.getBoolean(KEY_FORCE_TEXT_EDITING, false);
+    }
+
+    static boolean areToolbarBadgesDisabled(SharedPreferences prefs) {
+        return prefs != null && prefs.getBoolean(KEY_DISABLE_TOOLBAR_BADGES, false);
     }
 
     static String hiddenSettingPrefKey(String preferenceKey) {

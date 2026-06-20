@@ -10,6 +10,7 @@ public final class ToolbarConfigTest {
     public void defaultsToDisabledWithoutRemotePrefs() {
         assertFalse(ToolbarConfig.isEnabled(null));
         assertFalse(ToolbarConfig.isTextEditingEnabled(null));
+        assertFalse(ToolbarConfig.areToolbarBadgesDisabled(null));
     }
 
     @Test
