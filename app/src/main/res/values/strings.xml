@@ -1,4 +1,4 @@
 <resources>
     <string name="app_name">OneMate</string>
-    <string name="app_description">Restore selected Samsung Keyboard toolbar items with LSPosed.</string>
+    <string name="app_description">Restore Samsung Keyboard Text editing with LSPosed.</string>
 </resources>

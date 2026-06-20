@@ -1,5 +1,6 @@
 plugins {
     alias(libs.plugins.android.application)
+    alias(libs.plugins.kotlin.compose)
 }
 
 android {
@@ -30,6 +31,9 @@ android {
         sourceCompatibility = JavaVersion.VERSION_11
         targetCompatibility = JavaVersion.VERSION_11
     }
+    buildFeatures {
+        compose = true
+    }
     packaging {
         resources {
             merges += "META-INF/xposed/*"
@@ -40,6 +44,16 @@ android {
 
 dependencies {
     compileOnly(libs.libxposed.api)
+    implementation(platform(libs.androidx.compose.bom))
+    implementation(libs.androidx.activity.compose)
+    implementation(libs.androidx.compose.material.icons.extended)
+    implementation(libs.androidx.compose.material3)
+    implementation(libs.androidx.compose.ui)
+    implementation(libs.material.kolor)
+    implementation(libs.miuix.blur)
+    implementation(libs.miuix.icons)
+    implementation(libs.miuix.preference)
+    implementation(libs.miuix.ui)
     implementation(libs.libxposed.service)
     testImplementation(libs.junit)
 }

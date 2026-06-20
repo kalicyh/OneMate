@@ -398,8 +398,8 @@ public final class HoneyboardModule extends XposedModule {
 
     private boolean shouldForceVisible(Object beeId) {
         return beeId instanceof String
-                && ToolbarConfig.isEnabled(prefs)
-                && ToolbarConfig.forcedIds(prefs).contains((String) beeId);
+                && ToolbarConfig.isTextEditingEnabled(prefs)
+                && TEXT_EDITING_ID.equals(beeId);
     }
 
     private void syncEditorOverlay(Object serviceObject) {
