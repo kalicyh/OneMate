@@ -4,7 +4,13 @@ import android.content.SharedPreferences;
 
 final class ToolbarConfig {
     static final String TARGET_PACKAGE = "com.samsung.android.honeyboard";
+    static final String AQ_PACKAGE = "com.antgroup.aijk.android";
     static final String PREF_GROUP = "toolbar";
+    static final String ACTION_AQ_BODY_DATA =
+            "com.kalicyh.onemate.action.AQ_BODY_DATA";
+    static final String EXTRA_AQ_BODY_RESPONSE = "response";
+    static final String EXTRA_AQ_BODY_TOKEN = "token";
+    static final String KEY_AQ_BODY_TOKEN = "aq_body_token";
     static final String ACTION_HIDDEN_SETTING_RUNTIME =
             "com.kalicyh.onemate.action.HIDDEN_SETTING_RUNTIME";
     static final String EXTRA_HIDDEN_SETTING_KEY = "key";

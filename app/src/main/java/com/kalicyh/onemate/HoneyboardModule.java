@@ -2,6 +2,7 @@ package com.kalicyh.onemate;
 
 import android.content.Context;
 import android.content.ContextWrapper;
+import android.app.Application;
 import android.content.SharedPreferences;
 import android.graphics.Color;
 import android.graphics.drawable.Drawable;
@@ -67,6 +68,8 @@ public final class HoneyboardModule extends XposedModule {
     private static final String SETTINGS_FRAGMENT_CLASS =
             "com.samsung.android.honeyboard.settings.common.CommonSettingsFragmentCompat";
     private static final String R_CLASS = "com.samsung.android.honeyboard.R";
+    private static final String AQ_BODY_OPERATION =
+            "com.alipay.sportshealth.biz.rpc.body.composition.indicator.query";
     private static final String TEXT_EDITING_ID = "text_editing";
     private static final String TEXT_EDITING_BOARD_ID = "onemate_text_editing_board";
     private static final int VISIBILITY_HIDDEN = 2;
@@ -92,6 +95,10 @@ public final class HoneyboardModule extends XposedModule {
 
     @Override
     public void onPackageReady(PackageReadyParam param) {
+        if (ToolbarConfig.AQ_PACKAGE.equals(param.getPackageName())) {
+            hookAqBodyRpc(param.getClassLoader());
+            return;
+        }
         if (!ToolbarConfig.TARGET_PACKAGE.equals(param.getPackageName())) {
             return;
         }
@@ -106,6 +113,90 @@ public final class HoneyboardModule extends XposedModule {
         hookBoardRequester(classLoader);
         hookEditorOverlay(classLoader);
         hookHiddenSettings(classLoader);
+    }
+
+    private void hookAqBodyRpc(ClassLoader classLoader) {
+        try {
+            Class<?> rpcClass = Class.forName(
+                    "com.alipay.mobile.nebulax.integration.mpaas.proxy.impl.rpc.NXRpcImpl",
+                    false,
+                    classLoader);
+            Class<?> nodeClass = Class.forName("com.alibaba.ariver.kernel.api.node.Node",
+                    false, classLoader);
+            Class<?> configClass = Class.forName("com.alibaba.ariver.kernel.common.rpc.RVRpcConfig",
+                    false, classLoader);
+            Method method = rpcClass.getDeclaredMethod(
+                    "sendSimpleRpc",
+                    nodeClass,
+                    boolean.class,
+                    String.class,
+                    configClass,
+                    Object.class,
+                    Map.class);
+            method.setAccessible(true);
+            hook(method)
+                    .setId("aq-body-rpc")
+                    .setExceptionMode(ExceptionMode.PROTECTIVE)
+                    .intercept(chain -> {
+                        Object result = chain.proceed();
+                        Object operation = chain.getArg(2);
+                        if (AQ_BODY_OPERATION.equals(operation)) {
+                            String response = readRpcResponse(result);
+                            if (response != null && !response.isEmpty()) {
+                                broadcastAqBodyResponse(response);
+                            }
+                        }
+                        return result;
+                    });
+            log(Log.INFO, TAG, "hooked AQ body composition RPC");
+        } catch (Throwable t) {
+            log(Log.ERROR, TAG, "failed to hook AQ body composition RPC", t);
+        }
+    }
+
+    private String readRpcResponse(Object result) {
+        if (result == null) {
+            return null;
+        }
+        try {
+            Method getResponse = result.getClass().getMethod("getResponse");
+            Object response = getResponse.invoke(result);
+            return response == null ? null : String.valueOf(response);
+        } catch (Throwable t) {
+            log(Log.DEBUG, TAG, "failed to read AQ RPC response", t);
+            return null;
+        }
+    }
+
+    private void broadcastAqBodyResponse(String response) {
+        try {
+            Application app = currentApplication();
+            if (app == null) {
+                return;
+            }
+            Intent intent = new Intent(ToolbarConfig.ACTION_AQ_BODY_DATA);
+            intent.setPackage("com.kalicyh.onemate");
+            intent.putExtra(ToolbarConfig.EXTRA_AQ_BODY_RESPONSE, response);
+            intent.putExtra(ToolbarConfig.EXTRA_AQ_BODY_TOKEN,
+                    prefs == null ? "" : prefs.getString(ToolbarConfig.KEY_AQ_BODY_TOKEN, ""));
+            app.sendBroadcast(intent);
+            log(Log.INFO, TAG, "broadcast AQ body response len=" + response.length());
+        } catch (Throwable t) {
+            log(Log.ERROR, TAG, "failed to broadcast AQ body response", t);
+        }
+    }
+
+    private Application currentApplication() {
+        try {
+            Class<?> activityThread = Class.forName("android.app.ActivityThread");
+            Method currentApplication = activityThread.getDeclaredMethod("currentApplication");
+            currentApplication.setAccessible(true);
+            Object app = currentApplication.invoke(null);
+            return app instanceof Application ? (Application) app : null;
+        } catch (Throwable t) {
+            log(Log.DEBUG, TAG, "failed to get current application", t);
+            return null;
+        }
     }
 
     @Override

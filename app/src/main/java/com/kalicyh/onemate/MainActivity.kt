@@ -1,12 +1,20 @@
 package com.kalicyh.onemate
 
 import android.content.Context
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Intent
 import android.content.SharedPreferences
 import android.graphics.Color as AndroidColor
+import android.health.connect.HealthConnectManager
 import android.os.Build
 import android.os.Bundle
 import android.widget.Toast
 import java.io.File
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+import java.util.UUID
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
@@ -48,6 +56,7 @@ import androidx.compose.material.icons.rounded.AspectRatio
 import androidx.compose.material.icons.rounded.BlurOn
 import androidx.compose.material.icons.rounded.CallToAction
 import androidx.compose.material.icons.rounded.CheckCircleOutline
+import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.Colorize
 import androidx.compose.material.icons.rounded.DesignServices
 import androidx.compose.material.icons.rounded.ErrorOutline
@@ -77,6 +86,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
@@ -87,6 +97,7 @@ import com.materialkolor.rememberDynamicColorScheme
 import com.kalicyh.onemate.ui.component.FloatingBottomBar
 import com.kalicyh.onemate.ui.component.FloatingBottomBarItem
 import io.github.libxposed.service.XposedService
+import org.json.JSONObject
 import top.yukonga.miuix.kmp.blur.Backdrop
 import top.yukonga.miuix.kmp.blur.layerBackdrop
 import top.yukonga.miuix.kmp.blur.rememberLayerBackdrop
@@ -117,17 +128,20 @@ private const val THEME_PREFS = "settings"
 private const val RUNTIME_PREFS = "runtime"
 private const val CONFIG_ARCHIVE_PREFS = "config_archive"
 private const val CONFIG_ARCHIVE_SAVED = "saved"
+private const val HEALTH_PERMISSION_REQUEST = 42
 private const val ROUTE_HOME = 0
 private const val ROUTE_HIDDEN_SETTINGS = 1
-private const val ROUTE_SETTINGS = 2
-private const val ROUTE_THEME_SETTINGS = 3
-private const val ROUTE_ABOUT = 4
+private const val ROUTE_AQ_RECORDS = 2
+private const val ROUTE_SETTINGS = 3
+private const val ROUTE_THEME_SETTINGS = 4
+private const val ROUTE_ABOUT = 5
 
 class MainActivity : ComponentActivity(), App.ServiceStateListener {
     private var remotePrefs: SharedPreferences? = null
     private lateinit var themePrefs: SharedPreferences
     private lateinit var runtimePrefs: SharedPreferences
     private lateinit var configArchivePrefs: SharedPreferences
+    private lateinit var healthPrefs: SharedPreferences
     private var serviceState by mutableStateOf(ServiceUiState())
     private var themeSettings by mutableStateOf(ThemeSettings())
 
@@ -136,6 +150,7 @@ class MainActivity : ComponentActivity(), App.ServiceStateListener {
         themePrefs = getSharedPreferences(THEME_PREFS, Context.MODE_PRIVATE)
         runtimePrefs = getSharedPreferences(RUNTIME_PREFS, Context.MODE_PRIVATE)
         configArchivePrefs = getSharedPreferences(CONFIG_ARCHIVE_PREFS, Context.MODE_PRIVATE)
+        healthPrefs = getSharedPreferences(HealthConnectSync.PREFS, Context.MODE_PRIVATE)
         themeSettings = readThemeSettings(themePrefs)
 
         setContent {
@@ -147,6 +162,8 @@ class MainActivity : ComponentActivity(), App.ServiceStateListener {
                 onHiddenSettingEnabledChange = ::setHiddenSettingEnabled,
                 onRefreshState = ::refreshServiceState,
                 onRestartKeyboard = ::restartSamsungKeyboard,
+                onHealthSyncEnabledChange = ::setHealthSyncEnabled,
+                onRequestHealthPermissions = ::requestHealthPermissions,
                 onSaveConfigArchive = ::saveConfigArchive,
                 onRestoreConfigArchive = ::restoreConfigArchive,
                 onThemeChange = ::updateThemeSettings,
@@ -182,6 +199,7 @@ class MainActivity : ComponentActivity(), App.ServiceStateListener {
             } else {
                 null
             }
+            ensureAqBodyToken(remotePrefs)
             serviceState = ServiceUiState(
                 connected = service != null,
                 remoteSupported = remoteSupported,
@@ -191,6 +209,9 @@ class MainActivity : ComponentActivity(), App.ServiceStateListener {
                 toolbarBadgesDisabled = ToolbarConfig.areToolbarBadgesDisabled(remotePrefs),
                 enabledHiddenSettings = readEffectiveEnabledHiddenSettings(remotePrefs, runtimePrefs),
                 runtimeEnabledHiddenSettings = readRuntimeEnabledHiddenSettings(runtimePrefs),
+                healthSyncEnabled = healthPrefs.getBoolean(HealthConnectSync.KEY_ENABLED, false),
+                healthConnectGranted = HealthConnectSync.hasPermissions(this),
+                lastHealthStatus = healthPrefs.getString(HealthConnectSync.KEY_LAST_STATUS, "").orEmpty(),
             )
         } catch (e: RuntimeException) {
             remotePrefs = null
@@ -257,7 +278,61 @@ class MainActivity : ComponentActivity(), App.ServiceStateListener {
             toolbarBadgesDisabled = ToolbarConfig.areToolbarBadgesDisabled(prefs),
             enabledHiddenSettings = readEffectiveEnabledHiddenSettings(prefs, runtimePrefs),
             runtimeEnabledHiddenSettings = readRuntimeEnabledHiddenSettings(runtimePrefs),
+            healthSyncEnabled = healthPrefs.getBoolean(HealthConnectSync.KEY_ENABLED, false),
+            healthConnectGranted = HealthConnectSync.hasPermissions(this),
+            lastHealthStatus = healthPrefs.getString(HealthConnectSync.KEY_LAST_STATUS, "").orEmpty(),
         )
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<String>,
+        grantResults: IntArray,
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == HEALTH_PERMISSION_REQUEST) {
+            refreshServiceState()
+        }
+    }
+
+    private fun setHealthSyncEnabled(enabled: Boolean) {
+        ensureAqBodyToken(remotePrefs)
+        healthPrefs.edit().putBoolean(HealthConnectSync.KEY_ENABLED, enabled).apply()
+        serviceState = serviceState.copy(healthSyncEnabled = enabled)
+        if (enabled && !HealthConnectSync.hasPermissions(this)) {
+            requestHealthPermissions()
+        } else {
+            Toast.makeText(this, "已保存", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun ensureAqBodyToken(remotePrefs: SharedPreferences?) {
+        if (remotePrefs == null) return
+        val existing = healthPrefs.getString(ToolbarConfig.KEY_AQ_BODY_TOKEN, "").orEmpty()
+        val token = existing.ifBlank { UUID.randomUUID().toString() }
+        healthPrefs.edit().putString(ToolbarConfig.KEY_AQ_BODY_TOKEN, token).apply()
+        if (remotePrefs.getString(ToolbarConfig.KEY_AQ_BODY_TOKEN, "") != token) {
+            remotePrefs.edit().putString(ToolbarConfig.KEY_AQ_BODY_TOKEN, token).commit()
+        }
+    }
+
+    private fun requestHealthPermissions() {
+        runCatching {
+            requestPermissions(HealthConnectSync.permissions, HEALTH_PERMISSION_REQUEST)
+        }.onFailure {
+            runCatching {
+                startActivity(
+                    Intent(HealthConnectManager.ACTION_MANAGE_HEALTH_PERMISSIONS)
+                        .putExtra(Intent.EXTRA_PACKAGE_NAME, packageName)
+                )
+            }.onFailure { error ->
+                Toast.makeText(
+                    this,
+                    "无法打开 Health Connect 授权：${error.message.orEmpty()}",
+                    Toast.LENGTH_SHORT,
+                ).show()
+            }
+        }
     }
 
     private fun restartSamsungKeyboard() {
@@ -410,6 +485,8 @@ private fun OneMateApp(
     onHiddenSettingEnabledChange: (String, Boolean) -> Unit,
     onRefreshState: () -> Unit,
     onRestartKeyboard: () -> Unit,
+    onHealthSyncEnabledChange: (Boolean) -> Unit,
+    onRequestHealthPermissions: () -> Unit,
     onSaveConfigArchive: () -> Unit,
     onRestoreConfigArchive: () -> Unit,
     onThemeChange: (ThemeSettings) -> Unit,
@@ -438,10 +515,12 @@ private fun OneMateApp(
             val rootPage = when (route) {
                 ROUTE_HOME -> 0
                 ROUTE_HIDDEN_SETTINGS -> 1
-                else -> 2
+                ROUTE_AQ_RECORDS -> 2
+                else -> 3
             }
             val showBottomBar = route == ROUTE_HOME ||
                     route == ROUTE_HIDDEN_SETTINGS ||
+                    route == ROUTE_AQ_RECORDS ||
                     route == ROUTE_SETTINGS
             val surfaceColor = MiuixTheme.colorScheme.surface
             val backdrop = rememberLayerBackdrop {
@@ -490,12 +569,15 @@ private fun OneMateApp(
                                         onTextEditingEnabledChange,
                                         onToolbarBadgesDisabledChange,
                                         onRestartKeyboard,
+                                        onHealthSyncEnabledChange,
+                                        onRequestHealthPermissions,
                                     )
                                     ROUTE_HIDDEN_SETTINGS -> HiddenSettingsPage(
                                         serviceState = serviceState,
                                         onHiddenSettingEnabledChange = onHiddenSettingEnabledChange,
                                         onRefreshState = onRefreshState,
                                     )
+                                    ROUTE_AQ_RECORDS -> AqRecordsPage()
                                     ROUTE_SETTINGS -> SettingsPage(
                                         onSaveConfigArchive = onSaveConfigArchive,
                                         onRestoreConfigArchive = onRestoreConfigArchive,
@@ -509,6 +591,8 @@ private fun OneMateApp(
                                         onTextEditingEnabledChange,
                                         onToolbarBadgesDisabledChange,
                                         onRestartKeyboard,
+                                        onHealthSyncEnabledChange,
+                                        onRequestHealthPermissions,
                                     )
                                 }
                                 Spacer(
@@ -535,6 +619,7 @@ private fun OneMateApp(
                                 route = when (it) {
                                     0 -> ROUTE_HOME
                                     1 -> ROUTE_HIDDEN_SETTINGS
+                                    2 -> ROUTE_AQ_RECORDS
                                     else -> ROUTE_SETTINGS
                                 }
                             },
@@ -593,10 +678,17 @@ private fun OneMateBottomBar(
             )
             NavigationBarItem(
                 modifier = Modifier.weight(1f),
-                icon = Icons.Rounded.Settings,
-                label = "设置",
+                icon = Icons.Rounded.Info,
+                label = "AQ记录",
                 selected = page == 2,
                 onClick = { onPageChange(2) },
+            )
+            NavigationBarItem(
+                modifier = Modifier.weight(1f),
+                icon = Icons.Rounded.Settings,
+                label = "设置",
+                selected = page == 3,
+                onClick = { onPageChange(3) },
             )
         }
         return
@@ -614,7 +706,7 @@ private fun OneMateBottomBar(
         selectedIndex = page,
         onSelected = onPageChange,
         backdrop = backdrop,
-        tabsCount = 3,
+        tabsCount = 4,
         isBlurEnabled = glass,
     ) {
         FloatingBottomBarItem(
@@ -654,6 +746,22 @@ private fun OneMateBottomBar(
             modifier = Modifier.defaultMinSize(minWidth = 68.dp),
         ) {
             Icon(
+                imageVector = Icons.Rounded.Info,
+                contentDescription = "AQ记录",
+                tint = MiuixTheme.colorScheme.onSurface,
+            )
+            Text(
+                text = "AQ记录",
+                fontSize = 11.sp,
+                lineHeight = 14.sp,
+                color = MiuixTheme.colorScheme.onSurface,
+            )
+        }
+        FloatingBottomBarItem(
+            onClick = { onPageChange(3) },
+            modifier = Modifier.defaultMinSize(minWidth = 68.dp),
+        ) {
+            Icon(
                 imageVector = Icons.Rounded.Settings,
                 contentDescription = "设置",
                 tint = MiuixTheme.colorScheme.onSurface,
@@ -674,6 +782,8 @@ private fun HomePage(
     onTextEditingEnabledChange: (Boolean) -> Unit,
     onToolbarBadgesDisabledChange: (Boolean) -> Unit,
     onRestartKeyboard: () -> Unit,
+    onHealthSyncEnabledChange: (Boolean) -> Unit,
+    onRequestHealthPermissions: () -> Unit,
 ) {
     var testText by rememberSaveable { mutableStateOf("") }
 
@@ -710,6 +820,20 @@ private fun HomePage(
                 title = "强制重启三星键盘",
                 summary = "使用 root 执行 am force-stop；随后点击下面输入框重新拉起键盘。",
                 onClick = onRestartKeyboard,
+            )
+        }
+
+        Card(Modifier.fillMaxWidth()) {
+            SwitchPreference(
+                title = "同步 AQ 身材数据到 Health Connect",
+                summary = "打开 AQ 身材管理页时抓取体脂秤 RPC 结果，并写入体重、体脂、体水分、骨量、瘦体重、身高和基础代谢。",
+                checked = serviceState.healthSyncEnabled,
+                onCheckedChange = onHealthSyncEnabledChange,
+            )
+            ArrowPreference(
+                title = "Health Connect 授权",
+                summary = "状态：${if (serviceState.healthConnectGranted) "已授权" else "未授权"}\n${serviceState.lastHealthStatus.ifBlank { "尚未捕获 AQ 身材数据" }}",
+                onClick = onRequestHealthPermissions,
             )
         }
 
@@ -831,6 +955,159 @@ private fun StatusLine(
         )
     }
 }
+
+@Composable
+private fun AqRecordsPage() {
+    val context = LocalContext.current
+    var reload by remember { mutableIntStateOf(0) }
+    val records = remember(reload) { readAqRecords(context) }
+
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Card(Modifier.fillMaxWidth()) {
+            ArrowPreference(
+                title = "刷新记录",
+                summary = if (records.isEmpty()) {
+                    "还没有捕获到 AQ 身材管理数据；打开 AQ 身材管理页后再回来刷新。"
+                } else {
+                    "共 ${records.size} 条，按测量时间倒序排列。"
+                },
+                onClick = { reload++ },
+            )
+        }
+        if (records.isEmpty()) {
+            Card(Modifier.fillMaxWidth()) {
+                Text(
+                    "暂无记录",
+                    modifier = Modifier.padding(20.dp),
+                    fontSize = 16.sp,
+                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                )
+            }
+        } else {
+            records.forEach { record ->
+                AqRecordItem(record = record)
+            }
+        }
+    }
+}
+
+@Composable
+private fun AqRecordItem(record: AqDisplayRecord) {
+    val context = LocalContext.current
+    var expanded by rememberSaveable(record.recordTime) { mutableStateOf(false) }
+
+    Card(Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { expanded = !expanded }
+                .padding(horizontal = 20.dp, vertical = 16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(record.timeText, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+                Text(
+                    record.summary,
+                    fontSize = 14.sp,
+                    lineHeight = 18.sp,
+                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                )
+            }
+            Icon(
+                imageVector = if (expanded) {
+                    Icons.Rounded.KeyboardArrowDown
+                } else {
+                    Icons.AutoMirrored.Rounded.KeyboardArrowRight
+                },
+                contentDescription = null,
+                tint = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+            )
+        }
+        AnimatedVisibility(visible = expanded) {
+            Column(
+                modifier = Modifier.padding(start = 20.dp, end = 20.dp, bottom = 18.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        modifier = Modifier.weight(1f),
+                        text = "详细 JSON",
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Medium,
+                    )
+                    IconButton(onClick = { copyText(context, "AQ 身材记录", record.json) }) {
+                        Icon(
+                            imageVector = Icons.Rounded.ContentCopy,
+                            contentDescription = "复制",
+                            tint = MiuixTheme.colorScheme.onBackground,
+                        )
+                    }
+                }
+                Text(
+                    text = record.json,
+                    fontSize = 12.sp,
+                    lineHeight = 16.sp,
+                    fontFamily = FontFamily.Monospace,
+                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                )
+            }
+        }
+    }
+}
+
+private fun readAqRecords(context: Context): List<AqDisplayRecord> = runCatching {
+    val file = File(context.filesDir, HealthConnectSync.LATEST_FILE)
+    if (!file.isFile) return emptyList()
+    val day = JSONObject(file.readText()).getJSONObject("data").getJSONObject("day")
+    val records = day.getJSONArray("records")
+    buildList {
+        for (i in 0 until records.length()) {
+            val record = records.getJSONObject(i)
+            val recordTime = record.optLong("recordTime", 0L)
+            add(
+                AqDisplayRecord(
+                    recordTime = recordTime,
+                    timeText = formatAqRecordTime(recordTime),
+                    summary = aqRecordSummary(record),
+                    json = record.toString(2),
+                )
+            )
+        }
+    }.sortedByDescending { it.recordTime }
+}.getOrDefault(emptyList())
+
+private fun aqRecordSummary(record: JSONObject): String {
+    val parts = listOfNotNull(
+        record.optString("weight").takeIf { it.isNotBlank() }?.let { "体重 ${it}kg" },
+        record.optMetric("bmi")?.let { "BMI $it" },
+        record.optMetric("fatPercent")?.let { "体脂 $it%" },
+        record.optMetric("muscleMass")?.let { "肌肉 ${it}kg" },
+    )
+    return parts.joinToString(" / ").ifBlank { record.optString("source", "AQ 身材记录") }
+}
+
+private fun JSONObject.optMetric(key: String): String? =
+    optJSONObject(key)?.optString("value")?.takeIf { it.isNotBlank() }
+
+private fun formatAqRecordTime(recordTime: Long): String {
+    if (recordTime <= 0L) return "未知时间"
+    return DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
+        .withZone(ZoneId.systemDefault())
+        .format(Instant.ofEpochMilli(recordTime))
+}
+
+private fun copyText(context: Context, label: String, text: String) {
+    val clipboard = context.getSystemService(ClipboardManager::class.java) ?: return
+    clipboard.setPrimaryClip(ClipData.newPlainText(label, text))
+    Toast.makeText(context, "已复制", Toast.LENGTH_SHORT).show()
+}
+
+private data class AqDisplayRecord(
+    val recordTime: Long,
+    val timeText: String,
+    val summary: String,
+    val json: String,
+)
 
 @Composable
 private fun HiddenSettingsPage(
@@ -1341,6 +1618,9 @@ private data class ServiceUiState(
     val toolbarBadgesDisabled: Boolean = false,
     val enabledHiddenSettings: Set<String> = emptySet(),
     val runtimeEnabledHiddenSettings: Set<String> = emptySet(),
+    val healthSyncEnabled: Boolean = false,
+    val healthConnectGranted: Boolean = false,
+    val lastHealthStatus: String = "",
     val error: String = "",
 ) {
     val ready: Boolean
