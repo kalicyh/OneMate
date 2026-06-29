@@ -88,6 +88,7 @@ public final class HoneyboardModule extends XposedModule {
     private static final int POLICY_VISIBLE = 4;
     private static final int VISIBILITY_HIDDEN = 2;
     private static final int VISIBILITY_VISIBLE = 0;
+    private static final int SELECT_BUTTON_ACTIVE = Color.rgb(18, 78, 180);
 
     private SharedPreferences prefs;
     private final Map<Object, Map<String, Object>> syntheticBees =
@@ -1759,12 +1760,11 @@ public final class HoneyboardModule extends XposedModule {
                     0.2389f, 0.536f, 0.2389f, 0.288f);
 
             Button select = panelButton(service, "选择", 16, colors);
+            updateSelectButton(select, service, colors);
             select.setOnClickListener(v -> withPanelHaptic(v, () -> {
                 selectMode = !selectMode;
                 selectionAnchor = selectMode ? selectionEnd(service) : -1;
-                select.setBackground(roundRect(
-                        selectMode ? colors.selectedButton : colors.button,
-                        dp(service, 28)));
+                updateSelectButton(select, service, colors);
             }));
             addPercent(controls, select, 0.2389f, 0.344f, 0.2389f, 0.144f);
 
@@ -1832,6 +1832,13 @@ public final class HoneyboardModule extends XposedModule {
         private void withPanelHaptic(View view, Runnable action) {
             view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
             action.run();
+        }
+
+        private void updateSelectButton(Button button, Context context, PanelColors colors) {
+            button.setTextColor(selectMode ? Color.WHITE : colors.text);
+            button.setBackground(roundRect(
+                    selectMode ? SELECT_BUTTON_ACTIVE : colors.button,
+                    dp(context, 28)));
         }
 
         private Button panelButton(Context context, String label, int textSizeSp, PanelColors colors) {
