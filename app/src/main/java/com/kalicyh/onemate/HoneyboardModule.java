@@ -98,6 +98,7 @@ public final class HoneyboardModule extends XposedModule {
     private static final String RECENT_MEDIA_ID = "onemate_recent_media";
     private static final String TEXT_EDITING_BOARD_ID = "onemate_text_editing_board";
     private static final String RECENT_MEDIA_BOARD_ID = "onemate_recent_media_board";
+    private static final int DEFAULT_KEYBOARD_BACKGROUND = 0xFF101010;
     private static final int POLICY_VISIBLE = 4;
     private static final int VISIBILITY_HIDDEN = 2;
     private static final int VISIBILITY_VISIBLE = 0;
@@ -900,7 +901,7 @@ public final class HoneyboardModule extends XposedModule {
             service = asInputMethodService(context);
         }
         Context viewContext = service == null ? context : service;
-        PanelColors colors = panelColors(viewContext);
+        PanelColors colors = service == null ? panelColors(context) : panelColors(service);
         LinearLayout root = new LinearLayout(viewContext);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setPadding(dp(viewContext, 10), dp(viewContext, 8), dp(viewContext, 10), dp(viewContext, 8));
@@ -1766,14 +1767,14 @@ public final class HoneyboardModule extends XposedModule {
     }
 
     private PanelColors panelColors(Context context) {
-        int background = resolveColor(context, android.R.attr.colorBackground, Color.rgb(38, 36, 40));
+        int background = resolveColor(context, android.R.attr.colorBackground, DEFAULT_KEYBOARD_BACKGROUND);
         return panelColorsFromBackground(background);
     }
 
     private PanelColors panelColors(InputMethodService service) {
         int background = dominantBackgroundColor(
                 decorView(service),
-                resolveColor(service, android.R.attr.colorBackground, Color.rgb(38, 36, 40)));
+                resolveColor(service, android.R.attr.colorBackground, DEFAULT_KEYBOARD_BACKGROUND));
         return panelColorsFromBackground(background);
     }
 
