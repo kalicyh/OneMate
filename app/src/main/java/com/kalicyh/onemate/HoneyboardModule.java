@@ -14,6 +14,7 @@ import android.os.SystemClock;
 import android.util.Log;
 import android.util.TypedValue;
 import android.view.Gravity;
+import android.view.HapticFeedbackConstants;
 import android.view.KeyEvent;
 import android.view.View;
 import android.view.ViewGroup;
@@ -46,32 +47,45 @@ import io.github.libxposed.api.XposedModuleInterface.PackageReadyParam;
 
 public final class HoneyboardModule extends XposedModule {
     private static final String TAG = "OneMate";
-    private static final String POLICY_CLASS = "Q6.c";
-    private static final String POLICY_METHOD = "a";
+    private static final String POLICY_CLASS = "kf.c";
+    private static final String POLICY_METHOD = "b";
     private static final String BEE_ITEM_CLASS =
             "com.samsung.android.honeyboard.beehive.data.BeeItem";
-    private static final String BEE_INFO_BUILDER_CLASS = "N6.i";
-    private static final String BEE_INFO_CLASS = "N6.j";
-    private static final String BEE_INTERFACE_CLASS = "N6.c";
+    private static final String BEE_INFO_BUILDER_CLASS = "gf.j$a";
+    private static final String BEE_INFO_CLASS = "gf.j";
+    private static final String BEE_INTERFACE_CLASS = "gf.b";
     private static final String BEE_WORLD_CLASS =
+            "com.samsung.android.honeyboard.beehive.viewmodel.BeeWorld";
+    private static final String LEGACY_BEE_WORLD_CLASS =
             "com.samsung.android.honeyboard.beehive.viewmodel.J";
     private static final String BEE_TAG_CLASS =
             "com.samsung.android.honeyboard.common.beehive.BeeTag";
     private static final String PRESET_BEE_SET_CLASS = "Aa.a";
+    private static final String[] BEE_TAG_LIST_CLASSES = {
+            PRESET_BEE_SET_CLASS,
+            "wa.b",
+            "Wa.b",
+            "um.a",
+            "um.b",
+            "zm.c",
+            "zm.d"
+    };
     private static final String HONEYBOARD_SERVICE_CLASS =
             "com.samsung.android.honeyboard.service.HoneyBoardService";
-    private static final String BOARD_CONFIG_CLASS = "n7.e";
-    private static final String BOARD_MANAGER_CLASS = "Ea.e";
-    private static final String BOARD_CREATOR_INTERFACE_CLASS = "T6.D";
-    private static final String BOARD_INTERFACE_CLASS = "T6.b";
-    private static final String BOARD_REQUEST_INFO_CLASS = "T6.F";
+    private static final String BOARD_CONFIG_CLASS = "jg.e";
+    private static final String BOARD_MANAGER_CLASS = "cn.e";
+    private static final String BOARD_CREATOR_INTERFACE_CLASS = "nf.z$a";
+    private static final String BOARD_INTERFACE_CLASS = "nf.b";
+    private static final String BOARD_REQUEST_INFO_CLASS = "nf.a0";
     private static final String SETTINGS_FRAGMENT_CLASS =
             "com.samsung.android.honeyboard.settings.common.CommonSettingsFragmentCompat";
     private static final String R_CLASS = "com.samsung.android.honeyboard.R";
     private static final String AQ_BODY_OPERATION =
             "com.alipay.sportshealth.biz.rpc.body.composition.indicator.query";
-    private static final String TEXT_EDITING_ID = "text_editing";
+    private static final String SAMSUNG_TEXT_EDITING_ID = "text_editing";
+    private static final String TEXT_EDITING_ID = "onemate_text_editing";
     private static final String TEXT_EDITING_BOARD_ID = "onemate_text_editing_board";
+    private static final int POLICY_VISIBLE = 4;
     private static final int VISIBILITY_HIDDEN = 2;
     private static final int VISIBILITY_VISIBLE = 0;
 
@@ -83,6 +97,7 @@ public final class HoneyboardModule extends XposedModule {
     private final ThreadLocal<Boolean> addingSyntheticBee = new ThreadLocal<>();
     private InputMethodService currentService;
     private volatile Object boardConfig;
+    private volatile Object textEditingBoardManager;
     private volatile Object textEditingBoardRequester;
 
     @Override
@@ -217,7 +232,7 @@ public final class HoneyboardModule extends XposedModule {
                         if (result instanceof Integer
                                 && ((Integer) result).intValue() == VISIBILITY_HIDDEN
                                 && shouldForceVisible(chain.getArg(0))) {
-                            return VISIBILITY_VISIBLE;
+                            return Integer.valueOf(POLICY_VISIBLE);
                         }
                         return result;
                     });
@@ -228,12 +243,17 @@ public final class HoneyboardModule extends XposedModule {
     }
 
     private void hookBeeLookup(ClassLoader classLoader) {
+        hookBeeLookup(classLoader, BEE_WORLD_CLASS);
+        hookBeeLookup(classLoader, LEGACY_BEE_WORLD_CLASS);
+    }
+
+    private void hookBeeLookup(ClassLoader classLoader, String className) {
         try {
-            Class<?> beeWorldClass = Class.forName(BEE_WORLD_CLASS, false, classLoader);
-            Method method = beeWorldClass.getDeclaredMethod("i", String.class);
+            Class<?> beeWorldClass = Class.forName(className, false, classLoader);
+            Method method = firstDeclaredMethod(beeWorldClass, new String[]{"F", "i"}, String.class);
             method.setAccessible(true);
             hook(method)
-                    .setId("force-bee-lookup")
+                    .setId("force-bee-lookup-" + className.substring(className.lastIndexOf('.') + 1))
                     .setExceptionMode(ExceptionMode.PROTECTIVE)
                     .intercept(chain -> {
                         Object result = chain.proceed();
@@ -251,17 +271,22 @@ public final class HoneyboardModule extends XposedModule {
                         }
                         return result;
                     });
-            log(Log.INFO, TAG, "hooked " + BEE_WORLD_CLASS + "#i");
+            log(Log.INFO, TAG, "hooked " + className + "#" + method.getName());
         } catch (ClassNotFoundException | NoSuchMethodException e) {
-            log(Log.DEBUG, TAG, "skip missing bee lookup hook");
+            log(Log.DEBUG, TAG, "skip missing bee lookup hook " + className);
         } catch (Throwable t) {
-            log(Log.ERROR, TAG, "failed to hook bee lookup", t);
+            log(Log.ERROR, TAG, "failed to hook bee lookup " + className, t);
         }
     }
 
     private void hookBeeWorldRegistration(ClassLoader classLoader) {
+        hookBeeWorldRegistration(classLoader, BEE_WORLD_CLASS);
+        hookBeeWorldRegistration(classLoader, LEGACY_BEE_WORLD_CLASS);
+    }
+
+    private void hookBeeWorldRegistration(ClassLoader classLoader, String className) {
         try {
-            Class<?> beeWorldClass = Class.forName(BEE_WORLD_CLASS, false, classLoader);
+            Class<?> beeWorldClass = Class.forName(className, false, classLoader);
             Class<?> beeInterface = Class.forName(BEE_INTERFACE_CLASS, false, classLoader);
             int hooked = 0;
             for (Constructor<?> constructor : beeWorldClass.getDeclaredConstructors()) {
@@ -275,27 +300,42 @@ public final class HoneyboardModule extends XposedModule {
                         .setExceptionMode(ExceptionMode.PROTECTIVE)
                         .intercept(chain -> {
                             Object result = chain.proceed();
-                            registerSyntheticBee(chain.getThisObject(), classLoader, beeInterface);
+                            if (LEGACY_BEE_WORLD_CLASS.equals(className)) {
+                                registerSyntheticBeeBestEffort(
+                                        chain.getThisObject(), classLoader, beeInterface);
+                            }
                             return result;
                         });
             }
-            Method addBee = beeWorldClass.getDeclaredMethod("a", beeInterface);
-            addBee.setAccessible(true);
-            hook(addBee)
-                    .setId("register-text-editing-after-add")
+            hookBeeWorldRefresh(classLoader, beeWorldClass);
+            log(Log.INFO, TAG, "hooked " + className + " constructors=" + hooked);
+        } catch (ClassNotFoundException e) {
+            log(Log.DEBUG, TAG, "skip missing bee world registration hook " + className);
+        } catch (Throwable t) {
+            log(Log.ERROR, TAG, "failed to hook bee world registration " + className, t);
+        }
+    }
+
+    private void hookBeeWorldRefresh(ClassLoader classLoader, Class<?> beeWorldClass) {
+        try {
+            Method refresh = beeWorldClass.getDeclaredMethod("X0", java.util.List.class);
+            refresh.setAccessible(true);
+            hook(refresh)
+                    .setId("inject-text-editing-bee-refresh")
                     .setExceptionMode(ExceptionMode.PROTECTIVE)
                     .intercept(chain -> {
-                        Object result = chain.proceed();
-                        if (!Boolean.TRUE.equals(addingSyntheticBee.get())) {
-                            registerSyntheticBee(chain.getThisObject(), classLoader, beeInterface);
+                        injectSyntheticBee(chain.getThisObject(), classLoader, chain.getArg(0));
+                        addingSyntheticBee.set(Boolean.TRUE);
+                        try {
+                            return chain.proceed();
+                        } finally {
+                            addingSyntheticBee.remove();
                         }
-                        return result;
                     });
-            log(Log.INFO, TAG, "hooked " + BEE_WORLD_CLASS + " constructors=" + hooked);
-        } catch (ClassNotFoundException e) {
-            log(Log.DEBUG, TAG, "skip missing bee world registration hook");
-        } catch (Throwable t) {
-            log(Log.ERROR, TAG, "failed to hook bee world registration", t);
+            log(Log.INFO, TAG, "hooked " + beeWorldClass.getName() + "#X0");
+        } catch (NoSuchMethodException e) {
+            log(Log.DEBUG, TAG, "skip missing bee world refresh hook "
+                    + beeWorldClass.getName());
         }
     }
 
@@ -357,18 +397,18 @@ public final class HoneyboardModule extends XposedModule {
     }
 
     private void hookBeeTagLists(ClassLoader classLoader) {
-        hookBeeTagList(classLoader, PRESET_BEE_SET_CLASS, "preset");
-        hookBeeTagList(classLoader, "wa.b", "user-lower");
-        hookBeeTagList(classLoader, "Wa.b", "user-upper");
+        for (String className : BEE_TAG_LIST_CLASSES) {
+            hookBeeTagList(classLoader, className);
+        }
     }
 
-    private void hookBeeTagList(ClassLoader classLoader, String className, String label) {
+    private void hookBeeTagList(ClassLoader classLoader, String className) {
         try {
             Class<?> clazz = Class.forName(className, false, classLoader);
             Method method = clazz.getDeclaredMethod("d");
             method.setAccessible(true);
             hook(method)
-                    .setId("text-edit-bee-list-" + label)
+                    .setId("text-edit-bee-list-" + className.replace('.', '-'))
                     .setExceptionMode(ExceptionMode.PROTECTIVE)
                     .intercept(chain -> {
                         Object result = chain.proceed();
@@ -469,7 +509,8 @@ public final class HoneyboardModule extends XposedModule {
                             return result;
                         });
             }
-            Method setHandwritingMode = boardConfigClass.getDeclaredMethod("r", boolean.class);
+            Method setHandwritingMode = firstDeclaredMethod(
+                    boardConfigClass, new String[]{"e0", "r"}, boolean.class);
             setHandwritingMode.setAccessible(true);
             hook(setHandwritingMode)
                     .setId("sync-text-editing-with-handwriting")
@@ -661,7 +702,7 @@ public final class HoneyboardModule extends XposedModule {
             return;
         }
         try {
-            Method method = config.getClass().getDeclaredMethod("r", boolean.class);
+            Method method = firstDeclaredMethod(config.getClass(), new String[]{"e0", "r"}, boolean.class);
             method.setAccessible(true);
             method.invoke(config, enabled);
         } catch (Throwable t) {
@@ -672,18 +713,33 @@ public final class HoneyboardModule extends XposedModule {
     private void registerTextEditingBoard(
             Object boardManager, Context context, ClassLoader classLoader, Class<?> boardCreatorClass) {
         try {
+            textEditingBoardManager = boardManager;
             Object creator = Proxy.newProxyInstance(
                     classLoader,
                     new Class<?>[]{boardCreatorClass},
                     new TextEditingBoardCreatorHandler(context, classLoader));
-            Method method = boardManager.getClass().getDeclaredMethod(
-                    "y", String.class, boardCreatorClass, String.class);
-            method.setAccessible(true);
-            method.invoke(boardManager, TEXT_EDITING_BOARD_ID, creator, null);
+            invokeBoardRegister(boardManager, boardCreatorClass, creator);
             log(Log.INFO, TAG, "registered native text editing board");
         } catch (Throwable t) {
             log(Log.ERROR, TAG, "failed to register native text editing board", t);
         }
+    }
+
+    private void invokeBoardRegister(
+            Object boardManager, Class<?> boardCreatorClass, Object creator)
+            throws ReflectiveOperationException {
+        try {
+            Method method = boardManager.getClass().getDeclaredMethod(
+                    "L0", String.class, boardCreatorClass, String.class);
+            method.setAccessible(true);
+            method.invoke(boardManager, TEXT_EDITING_BOARD_ID, creator, null);
+            return;
+        } catch (NoSuchMethodException ignored) {
+        }
+        Method method = boardManager.getClass().getDeclaredMethod(
+                "y", String.class, boardCreatorClass, String.class);
+        method.setAccessible(true);
+        method.invoke(boardManager, TEXT_EDITING_BOARD_ID, creator, null);
     }
 
     private Object createTextEditingBoard(
@@ -700,8 +756,13 @@ public final class HoneyboardModule extends XposedModule {
         }
     }
 
+    private Object textEditingBoardRequester() {
+        Object manager = textEditingBoardManager;
+        return manager == null ? textEditingBoardRequester : manager;
+    }
+
     private boolean requestTextEditingBoard() {
-        Object requester = textEditingBoardRequester;
+        Object requester = textEditingBoardRequester();
         if (requester == null) {
             log(Log.INFO, TAG, "skip native text editing board request: requester is null");
             return false;
@@ -710,8 +771,9 @@ public final class HoneyboardModule extends XposedModule {
             ClassLoader classLoader = requester.getClass().getClassLoader();
             Class<?> requestInfoClass = Class.forName(
                     BOARD_REQUEST_INFO_CLASS, false, classLoader);
-            Method method = requester.getClass().getMethod(
-                    "D", String.class, requestInfoClass, boolean.class);
+            Method method = firstMethod(
+                    requester.getClass(), new String[]{"o2", "D"},
+                    String.class, requestInfoClass, boolean.class);
             method.invoke(requester, TEXT_EDITING_BOARD_ID, defaultBoardRequestInfo(requestInfoClass), false);
             log(Log.INFO, TAG, "requested native text editing board via "
                     + requester.getClass().getName());
@@ -736,13 +798,13 @@ public final class HoneyboardModule extends XposedModule {
 
     private boolean hideTextEditingBoard(Object requester) {
         if (requester == null) {
-            requester = textEditingBoardRequester;
+            requester = textEditingBoardRequester();
         }
         if (requester == null) {
             return false;
         }
         try {
-            Method method = requester.getClass().getMethod("q", String.class);
+            Method method = firstMethod(requester.getClass(), new String[]{"S0", "w0", "q"}, String.class);
             method.invoke(requester, TEXT_EDITING_BOARD_ID);
             clearTextEditingState();
             return true;
@@ -753,12 +815,12 @@ public final class HoneyboardModule extends XposedModule {
     }
 
     private boolean isTextEditingBoardActive() {
-        Object requester = textEditingBoardRequester;
+        Object requester = textEditingBoardRequester();
         if (requester == null) {
             return false;
         }
         try {
-            Method method = requester.getClass().getMethod("e", String.class);
+            Method method = firstMethod(requester.getClass(), new String[]{"J", "e"}, String.class);
             Object result = method.invoke(requester, TEXT_EDITING_BOARD_ID);
             return Boolean.TRUE.equals(result);
         } catch (Throwable ignored) {
@@ -783,7 +845,8 @@ public final class HoneyboardModule extends XposedModule {
         return new EditorOverlay().buildPanel(service);
     }
 
-    private void registerSyntheticBee(Object beeWorld, ClassLoader classLoader, Class<?> beeInterface) {
+    private void registerSyntheticBeeBestEffort(
+            Object beeWorld, ClassLoader classLoader, Class<?> beeInterface) {
         if (beeWorld == null || !shouldForceVisible(TEXT_EDITING_ID)) {
             return;
         }
@@ -795,7 +858,7 @@ public final class HoneyboardModule extends XposedModule {
             return;
         }
         try {
-            Method addBee = beeWorld.getClass().getDeclaredMethod("a", beeInterface);
+            Method addBee = firstDeclaredMethod(beeWorld.getClass(), new String[]{"o1", "a"}, beeInterface);
             addBee.setAccessible(true);
             addingSyntheticBee.set(Boolean.TRUE);
             try {
@@ -805,18 +868,51 @@ public final class HoneyboardModule extends XposedModule {
             }
             log(Log.INFO, TAG, "requested native registration for " + TEXT_EDITING_ID);
         } catch (Throwable t) {
-            log(Log.ERROR, TAG, "failed to register synthetic bee " + TEXT_EDITING_ID, t);
+            log(Log.DEBUG, TAG, "skip direct synthetic bee registration " + TEXT_EDITING_ID, t);
+        }
+    }
+
+    private void injectSyntheticBee(Object beeWorld, ClassLoader classLoader, Object beesArg) {
+        if (!(beesArg instanceof java.util.List) || !shouldForceVisible(TEXT_EDITING_ID)) {
+            return;
+        }
+        java.util.List<Object> bees = (java.util.List<Object>) beesArg;
+        if (containsBeeId(bees, TEXT_EDITING_ID)) {
+            return;
+        }
+        Object bee = getOrCreateSyntheticBee(beeWorld, classLoader, TEXT_EDITING_ID);
+        if (bee == null) {
+            return;
+        }
+        try {
+            bees.add(bee);
+            log(Log.INFO, TAG, "injected synthetic bee into refresh list " + TEXT_EDITING_ID);
+        } catch (UnsupportedOperationException e) {
+            log(Log.DEBUG, TAG, "skip immutable bee refresh list " + TEXT_EDITING_ID, e);
         }
     }
 
     private boolean hasActiveBee(Object beeWorld, String beeId) {
         addingSyntheticBee.set(Boolean.TRUE);
         try {
-            Object bee = callOneArgQuietly(beeWorld, "i", String.class, beeId);
+            Object bee = callOneArgQuietly(beeWorld, "F", String.class, beeId);
+            if (bee == null) {
+                bee = callOneArgQuietly(beeWorld, "i", String.class, beeId);
+            }
             return bee != null;
         } finally {
             addingSyntheticBee.remove();
         }
+    }
+
+    private boolean containsBeeId(java.util.List<?> bees, String beeId) {
+        for (Object bee : bees) {
+            String id = readStringMethod(bee, "getBeeId");
+            if (beeId.equals(id)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private Object callOneArgQuietly(
@@ -839,6 +935,7 @@ public final class HoneyboardModule extends XposedModule {
             return list;
         }
         java.util.ArrayList<Object> copy = new java.util.ArrayList<>(list);
+        removeBeeId(copy, SAMSUNG_TEXT_EDITING_ID);
         removeBeeId(copy, TEXT_EDITING_ID);
         copy.add(0, newBeeTag(classLoader, TEXT_EDITING_ID));
         return copy;
@@ -922,7 +1019,10 @@ public final class HoneyboardModule extends XposedModule {
     }
 
     private Context honeyboardContext(Object beeWorld) throws ReflectiveOperationException {
-        Object context = callNoArg(beeWorld, "l");
+        Object context = callNoArgQuietly(beeWorld, "N");
+        if (context == null) {
+            context = callNoArg(beeWorld, "l");
+        }
         if (!(context instanceof Context)) {
             throw new ReflectiveOperationException("missing Honeyboard context");
         }
@@ -930,7 +1030,7 @@ public final class HoneyboardModule extends XposedModule {
     }
 
     private Object newBeeInfo(Context context, ClassLoader classLoader) throws ReflectiveOperationException {
-        int labelId = optionalResourceId(context, classLoader, "string", "text_editing");
+        int labelId = optionalResourceId(context, classLoader, "string", SAMSUNG_TEXT_EDITING_ID);
         if (labelId == 0) {
             labelId = optionalResourceId(context, classLoader, "string", "cursor_control_text");
         }
@@ -968,8 +1068,11 @@ public final class HoneyboardModule extends XposedModule {
             builderConstructor.setAccessible(true);
             builder = builderConstructor.newInstance(context, iconId, labelId);
         }
+        setStringField(builder, "f27135f", "Text editing");
         setStringField(builder, "f6524f", "Text editing");
+        setIntField(builder, "f27136g", labelId);
         setIntField(builder, "f6525g", labelId);
+        setStringField(builder, "f27137h", "Text editing");
         setStringField(builder, "f6526h", "Text editing");
 
         Class<?> infoClass = Class.forName(BEE_INFO_CLASS, false, classLoader);
@@ -1054,6 +1157,40 @@ public final class HoneyboardModule extends XposedModule {
         return method.invoke(target);
     }
 
+    private Object callNoArgQuietly(Object target, String methodName) {
+        try {
+            return callNoArg(target, methodName);
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    private Method firstMethod(Class<?> clazz, String[] names, Class<?>... parameterTypes)
+            throws NoSuchMethodException {
+        for (String name : names) {
+            try {
+                Method method = clazz.getMethod(name, parameterTypes);
+                method.setAccessible(true);
+                return method;
+            } catch (NoSuchMethodException ignored) {
+            }
+        }
+        throw new NoSuchMethodException(java.util.Arrays.toString(names));
+    }
+
+    private Method firstDeclaredMethod(Class<?> clazz, String[] names, Class<?>... parameterTypes)
+            throws NoSuchMethodException {
+        for (String name : names) {
+            try {
+                Method method = clazz.getDeclaredMethod(name, parameterTypes);
+                method.setAccessible(true);
+                return method;
+            } catch (NoSuchMethodException ignored) {
+            }
+        }
+        throw new NoSuchMethodException(clazz.getName() + "#" + java.util.Arrays.toString(names));
+    }
+
     private final class TextEditingBoardCreatorHandler implements InvocationHandler {
         private final Context context;
         private final ClassLoader classLoader;
@@ -1075,9 +1212,11 @@ public final class HoneyboardModule extends XposedModule {
             if ("toString".equals(name)) {
                 return "OneMateTextEditingBoardCreator";
             }
-            if ("f".equals(name)) {
+            if ("a".equals(name) || "f".equals(name)) {
                 Object boardRequester = args == null || args.length == 0 ? null : args[0];
-                textEditingBoardRequester = boardRequester;
+                if (textEditingBoardRequester == null) {
+                    textEditingBoardRequester = boardRequester;
+                }
                 return createTextEditingBoard(context, classLoader, boardRequester);
             }
             return null;
@@ -1110,6 +1249,7 @@ public final class HoneyboardModule extends XposedModule {
                 return TEXT_EDITING_BOARD_ID;
             }
             if ("getBoardView".equals(name)) {
+                log(Log.INFO, TAG, "text editing board getBoardView");
                 return buildTextEditingBoardView(context, boardRequester);
             }
             if ("getCandidateView".equals(name)
@@ -1122,10 +1262,12 @@ public final class HoneyboardModule extends XposedModule {
             }
             if ("onBind".equals(name)) {
                 isBound = true;
+                log(Log.INFO, TAG, "text editing board onBind");
                 return null;
             }
             if ("onUnbind".equals(name)) {
                 isBound = false;
+                log(Log.INFO, TAG, "text editing board onUnbind");
                 clearTextEditingState();
                 return null;
             }
@@ -1617,13 +1759,13 @@ public final class HoneyboardModule extends XposedModule {
                     0.2389f, 0.536f, 0.2389f, 0.288f);
 
             Button select = panelButton(service, "选择", 16, colors);
-            select.setOnClickListener(v -> {
+            select.setOnClickListener(v -> withPanelHaptic(v, () -> {
                 selectMode = !selectMode;
                 selectionAnchor = selectMode ? selectionEnd(service) : -1;
                 select.setBackground(roundRect(
                         selectMode ? colors.selectedButton : colors.button,
                         dp(service, 28)));
-            });
+            }));
             addPercent(controls, select, 0.2389f, 0.344f, 0.2389f, 0.144f);
 
             addPercent(controls, iconButton(service, "ic_textedit_enter",
@@ -1666,7 +1808,7 @@ public final class HoneyboardModule extends XposedModule {
                 Context context, String label, Runnable action, PanelColors colors, int textSizeSp) {
             Button button = panelButton(context, label, textSizeSp, colors);
             button.setBackgroundColor(Color.TRANSPARENT);
-            button.setOnClickListener(v -> action.run());
+            button.setOnClickListener(v -> withPanelHaptic(v, action));
             return button;
         }
 
@@ -1683,8 +1825,13 @@ public final class HoneyboardModule extends XposedModule {
             button.setBackground(solid ? roundRect(colors.button, dp(context, 8)) : null);
             button.setFocusable(false);
             button.setFocusableInTouchMode(false);
-            button.setOnClickListener(v -> action.run());
+            button.setOnClickListener(v -> withPanelHaptic(v, action));
             return button;
+        }
+
+        private void withPanelHaptic(View view, Runnable action) {
+            view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
+            action.run();
         }
 
         private Button panelButton(Context context, String label, int textSizeSp, PanelColors colors) {

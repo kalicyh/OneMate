@@ -1,0 +1,4 @@
+-keep class com.kalicyh.onemate.App { *; }
+-keep class com.kalicyh.onemate.HoneyboardModule { *; }
+-keep class com.kalicyh.onemate.HoneyboardModule$* { *; }
+-keep class com.kalicyh.onemate.ToolbarConfig { *; }

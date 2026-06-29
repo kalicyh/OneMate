@@ -10,3 +10,10 @@
 #-keepclassmembers class fqcn.of.javascript.interface.for.webview {
 #   public *;
 #}
+
+-keep class com.kalicyh.onemate.App { *; }
+-keep class com.kalicyh.onemate.HoneyboardModule { *; }
+-keep class com.kalicyh.onemate.HoneyboardModule$* { *; }
+-keep class com.kalicyh.onemate.ToolbarConfig { *; }
+-keep class com.kalicyh.onemate.AqBodyDataReceiver { *; }
+-keep class com.kalicyh.onemate.HiddenSettingsStateReceiver { *; }

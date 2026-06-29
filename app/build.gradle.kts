@@ -16,6 +16,7 @@ android {
         targetSdk = 36
         versionCode = 1
         versionName = "1.0.0"
+        multiDexKeepProguard = file("src/main/keepRules/main-dex-rules.pro")
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

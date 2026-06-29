@@ -17,7 +17,7 @@ final class ToolbarConfig {
     static final String EXTRA_HIDDEN_SETTING_RUNTIME_ENABLED = "enabled";
     static final String KEY_FORCE_TEXT_EDITING = "force_text_editing";
     static final String KEY_DISABLE_TOOLBAR_BADGES = "disable_toolbar_badges";
-    static final String TEXT_EDITING_ID = "text_editing";
+    static final String TEXT_EDITING_ID = "onemate_text_editing";
     static final String[] HIDDEN_SETTING_KEYS = {
             "SETTINGS_SHOW_SMS_OTP",
             "SETTINGS_SPECIFIC_ASSIST",
