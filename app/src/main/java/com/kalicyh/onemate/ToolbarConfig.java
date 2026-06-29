@@ -5,6 +5,7 @@ import android.content.SharedPreferences;
 final class ToolbarConfig {
     static final String TARGET_PACKAGE = "com.samsung.android.honeyboard";
     static final String AQ_PACKAGE = "com.antgroup.aijk.android";
+    static final String MEDIA_PROVIDER_AUTHORITY = "com.kalicyh.onemate.media";
     static final String PREF_GROUP = "toolbar";
     static final String ACTION_AQ_BODY_DATA =
             "com.kalicyh.onemate.action.AQ_BODY_DATA";
@@ -16,8 +17,10 @@ final class ToolbarConfig {
     static final String EXTRA_HIDDEN_SETTING_KEY = "key";
     static final String EXTRA_HIDDEN_SETTING_RUNTIME_ENABLED = "enabled";
     static final String KEY_FORCE_TEXT_EDITING = "force_text_editing";
+    static final String KEY_FORCE_RECENT_MEDIA = "force_recent_media";
     static final String KEY_DISABLE_TOOLBAR_BADGES = "disable_toolbar_badges";
     static final String TEXT_EDITING_ID = "onemate_text_editing";
+    static final String RECENT_MEDIA_ID = "onemate_recent_media";
     static final String[] HIDDEN_SETTING_KEYS = {
             "SETTINGS_SHOW_SMS_OTP",
             "SETTINGS_SPECIFIC_ASSIST",
@@ -40,11 +43,15 @@ final class ToolbarConfig {
     }
 
     static boolean isEnabled(SharedPreferences prefs) {
-        return isTextEditingEnabled(prefs);
+        return isTextEditingEnabled(prefs) || isRecentMediaEnabled(prefs);
     }
 
     static boolean isTextEditingEnabled(SharedPreferences prefs) {
         return prefs != null && prefs.getBoolean(KEY_FORCE_TEXT_EDITING, false);
+    }
+
+    static boolean isRecentMediaEnabled(SharedPreferences prefs) {
+        return prefs != null && prefs.getBoolean(KEY_FORCE_RECENT_MEDIA, false);
     }
 
     static boolean areToolbarBadgesDisabled(SharedPreferences prefs) {

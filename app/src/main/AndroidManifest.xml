@@ -9,6 +9,11 @@
     <uses-permission android:name="android.permission.health.WRITE_HEIGHT" />
     <uses-permission android:name="android.permission.health.WRITE_LEAN_BODY_MASS" />
     <uses-permission android:name="android.permission.health.WRITE_WEIGHT" />
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
+    <uses-permission
+        android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32" />
 
     <application
         android:name=".App"
@@ -49,6 +54,11 @@
                 <action android:name="com.kalicyh.onemate.action.HIDDEN_SETTING_RUNTIME" />
             </intent-filter>
         </receiver>
+        <provider
+            android:name=".RecentMediaProvider"
+            android:authorities="com.kalicyh.onemate.media"
+            android:exported="true"
+            android:grantUriPermissions="true" />
     </application>
 
 </manifest>

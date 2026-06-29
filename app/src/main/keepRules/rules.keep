@@ -17,3 +17,4 @@
 -keep class com.kalicyh.onemate.ToolbarConfig { *; }
 -keep class com.kalicyh.onemate.AqBodyDataReceiver { *; }
 -keep class com.kalicyh.onemate.HiddenSettingsStateReceiver { *; }
+-keep class com.kalicyh.onemate.RecentMediaProvider { *; }

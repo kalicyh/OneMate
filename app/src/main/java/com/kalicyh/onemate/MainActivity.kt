@@ -5,6 +5,7 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Intent
 import android.content.SharedPreferences
+import android.content.pm.PackageManager
 import android.graphics.Color as AndroidColor
 import android.health.connect.HealthConnectManager
 import android.os.Build
@@ -129,6 +130,7 @@ private const val RUNTIME_PREFS = "runtime"
 private const val CONFIG_ARCHIVE_PREFS = "config_archive"
 private const val CONFIG_ARCHIVE_SAVED = "saved"
 private const val HEALTH_PERMISSION_REQUEST = 42
+private const val MEDIA_PERMISSION_REQUEST = 43
 private const val ROUTE_HOME = 0
 private const val ROUTE_HIDDEN_SETTINGS = 1
 private const val ROUTE_AQ_RECORDS = 2
@@ -158,12 +160,14 @@ class MainActivity : ComponentActivity(), App.ServiceStateListener {
                 serviceState = serviceState,
                 themeSettings = themeSettings,
                 onTextEditingEnabledChange = ::setTextEditingEnabled,
+                onMediaPickerEnabledChange = ::setMediaPickerEnabled,
                 onToolbarBadgesDisabledChange = ::setToolbarBadgesDisabled,
                 onHiddenSettingEnabledChange = ::setHiddenSettingEnabled,
                 onRefreshState = ::refreshServiceState,
                 onRestartKeyboard = ::restartSamsungKeyboard,
                 onHealthSyncEnabledChange = ::setHealthSyncEnabled,
                 onRequestHealthPermissions = ::requestHealthPermissions,
+                onRequestMediaPermissions = ::requestMediaPermissions,
                 onSaveConfigArchive = ::saveConfigArchive,
                 onRestoreConfigArchive = ::restoreConfigArchive,
                 onThemeChange = ::updateThemeSettings,
@@ -206,6 +210,8 @@ class MainActivity : ComponentActivity(), App.ServiceStateListener {
                 inScope = service?.scope?.contains(ToolbarConfig.TARGET_PACKAGE) == true,
                 framework = service?.let { "${it.frameworkName} API ${it.apiVersion}" }.orEmpty(),
                 textEditingEnabled = ToolbarConfig.isTextEditingEnabled(remotePrefs),
+                mediaPickerEnabled = ToolbarConfig.isRecentMediaEnabled(remotePrefs),
+                mediaPermissionsGranted = hasMediaPermissions(),
                 toolbarBadgesDisabled = ToolbarConfig.areToolbarBadgesDisabled(remotePrefs),
                 enabledHiddenSettings = readEffectiveEnabledHiddenSettings(remotePrefs, runtimePrefs),
                 runtimeEnabledHiddenSettings = readRuntimeEnabledHiddenSettings(runtimePrefs),
@@ -234,6 +240,30 @@ class MainActivity : ComponentActivity(), App.ServiceStateListener {
         }
         serviceState = serviceState.copy(textEditingEnabled = enabled)
         Toast.makeText(this, "已保存", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun setMediaPickerEnabled(enabled: Boolean) {
+        val prefs = remotePrefs
+        if (prefs == null) {
+            Toast.makeText(this, "LSPosed remote preferences 不可用", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val saved = prefs.edit()
+            .putBoolean(ToolbarConfig.KEY_FORCE_RECENT_MEDIA, enabled)
+            .commit()
+        if (!saved) {
+            Toast.makeText(this, "保存失败", Toast.LENGTH_SHORT).show()
+            return
+        }
+        serviceState = serviceState.copy(
+            mediaPickerEnabled = enabled,
+            mediaPermissionsGranted = hasMediaPermissions(),
+        )
+        if (enabled && !hasMediaPermissions()) {
+            requestMediaPermissions()
+        } else {
+            Toast.makeText(this, "已保存，重启三星键盘后生效", Toast.LENGTH_SHORT).show()
+        }
     }
 
     private fun setToolbarBadgesDisabled(disabled: Boolean) {
@@ -276,6 +306,8 @@ class MainActivity : ComponentActivity(), App.ServiceStateListener {
         val prefs = remotePrefs
         serviceState = serviceState.copy(
             toolbarBadgesDisabled = ToolbarConfig.areToolbarBadgesDisabled(prefs),
+            mediaPickerEnabled = ToolbarConfig.isRecentMediaEnabled(prefs),
+            mediaPermissionsGranted = hasMediaPermissions(),
             enabledHiddenSettings = readEffectiveEnabledHiddenSettings(prefs, runtimePrefs),
             runtimeEnabledHiddenSettings = readRuntimeEnabledHiddenSettings(runtimePrefs),
             healthSyncEnabled = healthPrefs.getBoolean(HealthConnectSync.KEY_ENABLED, false),
@@ -292,8 +324,27 @@ class MainActivity : ComponentActivity(), App.ServiceStateListener {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode == HEALTH_PERMISSION_REQUEST) {
             refreshServiceState()
+        } else if (requestCode == MEDIA_PERMISSION_REQUEST) {
+            refreshServiceState()
         }
     }
+
+    private fun hasMediaPermissions(): Boolean =
+        mediaPermissions().all { checkSelfPermission(it) == PackageManager.PERMISSION_GRANTED }
+
+    private fun requestMediaPermissions() {
+        requestPermissions(mediaPermissions(), MEDIA_PERMISSION_REQUEST)
+    }
+
+    private fun mediaPermissions(): Array<String> =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            arrayOf(
+                android.Manifest.permission.READ_MEDIA_IMAGES,
+                android.Manifest.permission.READ_MEDIA_VIDEO,
+            )
+        } else {
+            arrayOf(android.Manifest.permission.READ_EXTERNAL_STORAGE)
+        }
 
     private fun setHealthSyncEnabled(enabled: Boolean) {
         ensureAqBodyToken(remotePrefs)
@@ -481,12 +532,14 @@ private fun OneMateApp(
     serviceState: ServiceUiState,
     themeSettings: ThemeSettings,
     onTextEditingEnabledChange: (Boolean) -> Unit,
+    onMediaPickerEnabledChange: (Boolean) -> Unit,
     onToolbarBadgesDisabledChange: (Boolean) -> Unit,
     onHiddenSettingEnabledChange: (String, Boolean) -> Unit,
     onRefreshState: () -> Unit,
     onRestartKeyboard: () -> Unit,
     onHealthSyncEnabledChange: (Boolean) -> Unit,
     onRequestHealthPermissions: () -> Unit,
+    onRequestMediaPermissions: () -> Unit,
     onSaveConfigArchive: () -> Unit,
     onRestoreConfigArchive: () -> Unit,
     onThemeChange: (ThemeSettings) -> Unit,
@@ -567,10 +620,12 @@ private fun OneMateApp(
                                     ROUTE_HOME -> HomePage(
                                         serviceState,
                                         onTextEditingEnabledChange,
+                                        onMediaPickerEnabledChange,
                                         onToolbarBadgesDisabledChange,
                                         onRestartKeyboard,
                                         onHealthSyncEnabledChange,
                                         onRequestHealthPermissions,
+                                        onRequestMediaPermissions,
                                     )
                                     ROUTE_HIDDEN_SETTINGS -> HiddenSettingsPage(
                                         serviceState = serviceState,
@@ -589,10 +644,12 @@ private fun OneMateApp(
                                     else -> HomePage(
                                         serviceState,
                                         onTextEditingEnabledChange,
+                                        onMediaPickerEnabledChange,
                                         onToolbarBadgesDisabledChange,
                                         onRestartKeyboard,
                                         onHealthSyncEnabledChange,
                                         onRequestHealthPermissions,
+                                        onRequestMediaPermissions,
                                     )
                                 }
                                 Spacer(
@@ -780,10 +837,12 @@ private fun OneMateBottomBar(
 private fun HomePage(
     serviceState: ServiceUiState,
     onTextEditingEnabledChange: (Boolean) -> Unit,
+    onMediaPickerEnabledChange: (Boolean) -> Unit,
     onToolbarBadgesDisabledChange: (Boolean) -> Unit,
     onRestartKeyboard: () -> Unit,
     onHealthSyncEnabledChange: (Boolean) -> Unit,
     onRequestHealthPermissions: () -> Unit,
+    onRequestMediaPermissions: () -> Unit,
 ) {
     var testText by rememberSaveable { mutableStateOf("") }
 
@@ -805,6 +864,30 @@ private fun HomePage(
                 checked = serviceState.textEditingEnabled,
                 enabled = serviceState.remoteSupported,
                 onCheckedChange = onTextEditingEnabledChange,
+            )
+            SwitchPreference(
+                title = "启用最近图片/视频",
+                summary = "在三星键盘工具栏显示最近 6 个图片或视频，通过输入法发送，目标软件不需要相册权限。",
+                startAction = {
+                    Icon(
+                        Icons.Rounded.Wallpaper,
+                        modifier = Modifier.padding(end = 6.dp),
+                        contentDescription = null,
+                        tint = MiuixTheme.colorScheme.onBackground,
+                    )
+                },
+                checked = serviceState.mediaPickerEnabled,
+                enabled = serviceState.remoteSupported,
+                onCheckedChange = onMediaPickerEnabledChange,
+            )
+            ArrowPreference(
+                title = "图片/视频授权",
+                summary = if (serviceState.mediaPermissionsGranted) {
+                    "状态：已授权"
+                } else {
+                    "状态：未授权；打开后用于读取最近 6 个本机媒体。"
+                },
+                onClick = onRequestMediaPermissions,
             )
             SwitchPreference(
                 title = "禁用工具栏红点",
@@ -1615,6 +1698,8 @@ private data class ServiceUiState(
     val inScope: Boolean = false,
     val framework: String = "",
     val textEditingEnabled: Boolean = false,
+    val mediaPickerEnabled: Boolean = false,
+    val mediaPermissionsGranted: Boolean = false,
     val toolbarBadgesDisabled: Boolean = false,
     val enabledHiddenSettings: Set<String> = emptySet(),
     val runtimeEnabledHiddenSettings: Set<String> = emptySet(),
@@ -1668,6 +1753,7 @@ private fun readRuntimeEnabledHiddenSettings(prefs: SharedPreferences?): Set<Str
 private val configArchiveKeys: List<String>
     get() = buildList {
         add(ToolbarConfig.KEY_FORCE_TEXT_EDITING)
+        add(ToolbarConfig.KEY_FORCE_RECENT_MEDIA)
         add(ToolbarConfig.KEY_DISABLE_TOOLBAR_BADGES)
         hiddenSettingOptions.forEach { add(ToolbarConfig.hiddenSettingPrefKey(it.key)) }
     }

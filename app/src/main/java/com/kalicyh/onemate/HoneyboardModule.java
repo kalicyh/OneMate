@@ -3,13 +3,23 @@ package com.kalicyh.onemate;
 import android.content.Context;
 import android.content.ContextWrapper;
 import android.app.Application;
+import android.content.ClipData;
+import android.content.ClipDescription;
+import android.content.ClipboardManager;
+import android.content.ContentResolver;
 import android.content.SharedPreferences;
+import android.database.Cursor;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.graphics.Color;
 import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.Icon;
 import android.inputmethodservice.InputMethodService;
+import android.media.MediaMetadataRetriever;
 import android.content.Intent;
+import android.net.Uri;
+import android.os.Bundle;
 import android.os.SystemClock;
 import android.util.Log;
 import android.util.TypedValue;
@@ -24,6 +34,7 @@ import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.ExtractedText;
 import android.view.inputmethod.ExtractedTextRequest;
 import android.view.inputmethod.InputConnection;
+import android.view.inputmethod.InputContentInfo;
 import android.widget.Button;
 import android.widget.FrameLayout;
 import android.widget.ImageButton;
@@ -84,7 +95,9 @@ public final class HoneyboardModule extends XposedModule {
             "com.alipay.sportshealth.biz.rpc.body.composition.indicator.query";
     private static final String SAMSUNG_TEXT_EDITING_ID = "text_editing";
     private static final String TEXT_EDITING_ID = "onemate_text_editing";
+    private static final String RECENT_MEDIA_ID = "onemate_recent_media";
     private static final String TEXT_EDITING_BOARD_ID = "onemate_text_editing_board";
+    private static final String RECENT_MEDIA_BOARD_ID = "onemate_recent_media_board";
     private static final int POLICY_VISIBLE = 4;
     private static final int VISIBILITY_HIDDEN = 2;
     private static final int VISIBILITY_VISIBLE = 0;
@@ -414,10 +427,10 @@ public final class HoneyboardModule extends XposedModule {
                     .intercept(chain -> {
                         Object result = chain.proceed();
                         if (!(result instanceof java.util.List)
-                                || !shouldForceVisible(TEXT_EDITING_ID)) {
+                                || !shouldInjectAnyOneMateBee()) {
                             return result;
                         }
-                        return listWithTextEditing((java.util.List<?>) result, classLoader);
+                        return listWithOneMateBees((java.util.List<?>) result, classLoader);
                     });
             log(Log.INFO, TAG, "hooked " + className + "#d");
         } catch (ClassNotFoundException | NoSuchMethodException e) {
@@ -594,9 +607,18 @@ public final class HoneyboardModule extends XposedModule {
     }
 
     private boolean shouldForceVisible(Object beeId) {
-        return beeId instanceof String
-                && ToolbarConfig.isTextEditingEnabled(prefs)
-                && TEXT_EDITING_ID.equals(beeId);
+        if (!(beeId instanceof String)) {
+            return false;
+        }
+        String id = (String) beeId;
+        if (TEXT_EDITING_ID.equals(id)) {
+            return ToolbarConfig.isTextEditingEnabled(prefs);
+        }
+        return RECENT_MEDIA_ID.equals(id) && ToolbarConfig.isRecentMediaEnabled(prefs);
+    }
+
+    private boolean shouldInjectAnyOneMateBee() {
+        return ToolbarConfig.isTextEditingEnabled(prefs) || ToolbarConfig.isRecentMediaEnabled(prefs);
     }
 
     private boolean isBeeHiveBlocked(Object beeItem) {
@@ -715,44 +737,56 @@ public final class HoneyboardModule extends XposedModule {
             Object boardManager, Context context, ClassLoader classLoader, Class<?> boardCreatorClass) {
         try {
             textEditingBoardManager = boardManager;
-            Object creator = Proxy.newProxyInstance(
-                    classLoader,
-                    new Class<?>[]{boardCreatorClass},
-                    new TextEditingBoardCreatorHandler(context, classLoader));
-            invokeBoardRegister(boardManager, boardCreatorClass, creator);
-            log(Log.INFO, TAG, "registered native text editing board");
+            registerNativeBoard(
+                    boardManager, context, classLoader, boardCreatorClass, TEXT_EDITING_BOARD_ID);
+            registerNativeBoard(
+                    boardManager, context, classLoader, boardCreatorClass, RECENT_MEDIA_BOARD_ID);
+            log(Log.INFO, TAG, "registered native OneMate boards");
         } catch (Throwable t) {
-            log(Log.ERROR, TAG, "failed to register native text editing board", t);
+            log(Log.ERROR, TAG, "failed to register native OneMate boards", t);
         }
     }
 
+    private void registerNativeBoard(
+            Object boardManager,
+            Context context,
+            ClassLoader classLoader,
+            Class<?> boardCreatorClass,
+            String boardId) throws ReflectiveOperationException {
+        Object creator = Proxy.newProxyInstance(
+                classLoader,
+                new Class<?>[]{boardCreatorClass},
+                new TextEditingBoardCreatorHandler(context, classLoader, boardId));
+        invokeBoardRegister(boardManager, boardCreatorClass, creator, boardId);
+    }
+
     private void invokeBoardRegister(
-            Object boardManager, Class<?> boardCreatorClass, Object creator)
+            Object boardManager, Class<?> boardCreatorClass, Object creator, String boardId)
             throws ReflectiveOperationException {
         try {
             Method method = boardManager.getClass().getDeclaredMethod(
                     "L0", String.class, boardCreatorClass, String.class);
             method.setAccessible(true);
-            method.invoke(boardManager, TEXT_EDITING_BOARD_ID, creator, null);
+            method.invoke(boardManager, boardId, creator, null);
             return;
         } catch (NoSuchMethodException ignored) {
         }
         Method method = boardManager.getClass().getDeclaredMethod(
                 "y", String.class, boardCreatorClass, String.class);
         method.setAccessible(true);
-        method.invoke(boardManager, TEXT_EDITING_BOARD_ID, creator, null);
+        method.invoke(boardManager, boardId, creator, null);
     }
 
     private Object createTextEditingBoard(
-            Context context, ClassLoader classLoader, Object boardRequester) {
+            Context context, ClassLoader classLoader, Object boardRequester, String boardId) {
         try {
             Class<?> boardInterface = Class.forName(BOARD_INTERFACE_CLASS, false, classLoader);
             return Proxy.newProxyInstance(
                     classLoader,
                     new Class<?>[]{boardInterface},
-                    new TextEditingBoardHandler(context, boardRequester));
+                    new TextEditingBoardHandler(context, boardRequester, boardId));
         } catch (Throwable t) {
-            log(Log.ERROR, TAG, "failed to create native text editing board", t);
+            log(Log.ERROR, TAG, "failed to create native board " + boardId, t);
             return null;
         }
     }
@@ -763,9 +797,13 @@ public final class HoneyboardModule extends XposedModule {
     }
 
     private boolean requestTextEditingBoard() {
+        return requestNativeBoard(TEXT_EDITING_BOARD_ID);
+    }
+
+    private boolean requestNativeBoard(String boardId) {
         Object requester = textEditingBoardRequester();
         if (requester == null) {
-            log(Log.INFO, TAG, "skip native text editing board request: requester is null");
+            log(Log.INFO, TAG, "skip native board request: requester is null " + boardId);
             return false;
         }
         try {
@@ -775,12 +813,12 @@ public final class HoneyboardModule extends XposedModule {
             Method method = firstMethod(
                     requester.getClass(), new String[]{"o2", "D"},
                     String.class, requestInfoClass, boolean.class);
-            method.invoke(requester, TEXT_EDITING_BOARD_ID, defaultBoardRequestInfo(requestInfoClass), false);
-            log(Log.INFO, TAG, "requested native text editing board via "
+            method.invoke(requester, boardId, defaultBoardRequestInfo(requestInfoClass), false);
+            log(Log.INFO, TAG, "requested native board " + boardId + " via "
                     + requester.getClass().getName());
             return true;
         } catch (Throwable t) {
-            log(Log.INFO, TAG, "failed to request native text editing board", t);
+            log(Log.INFO, TAG, "failed to request native board " + boardId, t);
             return false;
         }
     }
@@ -798,6 +836,10 @@ public final class HoneyboardModule extends XposedModule {
     }
 
     private boolean hideTextEditingBoard(Object requester) {
+        return hideNativeBoard(requester, TEXT_EDITING_BOARD_ID);
+    }
+
+    private boolean hideNativeBoard(Object requester, String boardId) {
         if (requester == null) {
             requester = textEditingBoardRequester();
         }
@@ -806,23 +848,29 @@ public final class HoneyboardModule extends XposedModule {
         }
         try {
             Method method = firstMethod(requester.getClass(), new String[]{"S0", "w0", "q"}, String.class);
-            method.invoke(requester, TEXT_EDITING_BOARD_ID);
-            clearTextEditingState();
+            method.invoke(requester, boardId);
+            if (TEXT_EDITING_BOARD_ID.equals(boardId)) {
+                clearTextEditingState();
+            }
             return true;
         } catch (Throwable t) {
-            log(Log.DEBUG, TAG, "failed to hide native text editing board", t);
+            log(Log.DEBUG, TAG, "failed to hide native board " + boardId, t);
             return false;
         }
     }
 
     private boolean isTextEditingBoardActive() {
+        return isNativeBoardActive(TEXT_EDITING_BOARD_ID);
+    }
+
+    private boolean isNativeBoardActive(String boardId) {
         Object requester = textEditingBoardRequester();
         if (requester == null) {
             return false;
         }
         try {
             Method method = firstMethod(requester.getClass(), new String[]{"J", "e"}, String.class);
-            Object result = method.invoke(requester, TEXT_EDITING_BOARD_ID);
+            Object result = method.invoke(requester, boardId);
             return Boolean.TRUE.equals(result);
         } catch (Throwable ignored) {
             return false;
@@ -844,6 +892,219 @@ public final class HoneyboardModule extends XposedModule {
             return fallback;
         }
         return new EditorOverlay().buildPanel(service);
+    }
+
+    private View buildRecentMediaBoardView(Context context) {
+        InputMethodService service = currentService;
+        if (service == null) {
+            service = asInputMethodService(context);
+        }
+        Context viewContext = service == null ? context : service;
+        PanelColors colors = panelColors(viewContext);
+        LinearLayout root = new LinearLayout(viewContext);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.setPadding(dp(viewContext, 10), dp(viewContext, 8), dp(viewContext, 10), dp(viewContext, 8));
+        root.setBackgroundColor(colors.background);
+
+        java.util.List<RecentMediaItem> items = recentMediaItems(viewContext);
+        if (items.isEmpty()) {
+            TextView empty = new TextView(viewContext);
+            empty.setText("没有可发送的最近图片或视频");
+            empty.setGravity(Gravity.CENTER);
+            empty.setTextColor(colors.text);
+            empty.setTextSize(15);
+            root.addView(empty, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT));
+            return root;
+        }
+
+        int gap = dp(viewContext, 6);
+        LinearLayout rows = new LinearLayout(viewContext);
+        rows.setOrientation(LinearLayout.VERTICAL);
+        for (int rowIndex = 0; rowIndex < 2; rowIndex++) {
+            LinearLayout row = new LinearLayout(viewContext);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            for (int col = 0; col < 3; col++) {
+                int index = rowIndex * 3 + col;
+                View child = index < items.size()
+                        ? mediaTile(viewContext, items.get(index), colors)
+                        : new View(viewContext);
+                LinearLayout.LayoutParams cellParams = new LinearLayout.LayoutParams(
+                        0, ViewGroup.LayoutParams.MATCH_PARENT, 1f);
+                cellParams.setMargins(gap, gap, gap, gap);
+                row.addView(child, cellParams);
+            }
+            rows.addView(row, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+        }
+        root.addView(rows, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+        return root;
+    }
+
+    private FrameLayout mediaTile(Context context, RecentMediaItem item, PanelColors colors) {
+        FrameLayout tile = new FrameLayout(context);
+        tile.setBackground(roundRect(colors.button, dp(context, 10)));
+        ImageView image = new ImageView(context);
+        image.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        Bitmap thumbnail = mediaThumbnail(context, item);
+        if (thumbnail != null) {
+            image.setImageBitmap(thumbnail);
+        } else {
+            image.setBackgroundColor(colors.pad);
+        }
+        tile.addView(image, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT));
+        if (item.video) {
+            TextView badge = new TextView(context);
+            badge.setText("视频");
+            badge.setTextColor(Color.WHITE);
+            badge.setTextSize(11);
+            badge.setGravity(Gravity.CENTER);
+            badge.setBackground(roundRect(Color.argb(190, 18, 78, 180), dp(context, 10)));
+            FrameLayout.LayoutParams badgeParams = new FrameLayout.LayoutParams(
+                    dp(context, 46), dp(context, 24), Gravity.RIGHT | Gravity.BOTTOM);
+            badgeParams.setMargins(0, 0, dp(context, 6), dp(context, 6));
+            tile.addView(badge, badgeParams);
+        }
+        tile.setOnClickListener(view -> withHaptic(view, () -> commitMediaContent(item)));
+        return tile;
+    }
+
+    private Bitmap mediaThumbnail(Context context, RecentMediaItem item) {
+        if (item.video) {
+            MediaMetadataRetriever retriever = new MediaMetadataRetriever();
+            try {
+                retriever.setDataSource(context, item.uri);
+                return retriever.getFrameAtTime(0, MediaMetadataRetriever.OPTION_CLOSEST_SYNC);
+            } catch (Throwable t) {
+                log(Log.DEBUG, TAG, "failed to load video thumbnail " + item.uri, t);
+                return null;
+            } finally {
+                try {
+                    retriever.release();
+                } catch (Throwable ignored) {
+                }
+            }
+        }
+        try {
+            BitmapFactory.Options bounds = new BitmapFactory.Options();
+            bounds.inJustDecodeBounds = true;
+            try (java.io.InputStream stream = context.getContentResolver().openInputStream(item.uri)) {
+                BitmapFactory.decodeStream(stream, null, bounds);
+            }
+            BitmapFactory.Options opts = new BitmapFactory.Options();
+            opts.inSampleSize = thumbnailSampleSize(bounds, 360);
+            try (java.io.InputStream stream = context.getContentResolver().openInputStream(item.uri)) {
+                return BitmapFactory.decodeStream(stream, null, opts);
+            }
+        } catch (Throwable t) {
+            log(Log.DEBUG, TAG, "failed to load image thumbnail " + item.uri, t);
+            return null;
+        }
+    }
+
+    private int thumbnailSampleSize(BitmapFactory.Options options, int targetSize) {
+        int sampleSize = 1;
+        int width = options.outWidth;
+        int height = options.outHeight;
+        while (width / sampleSize > targetSize * 2 || height / sampleSize > targetSize * 2) {
+            sampleSize *= 2;
+        }
+        return sampleSize;
+    }
+
+    private java.util.List<RecentMediaItem> recentMediaItems(Context context) {
+        java.util.ArrayList<RecentMediaItem> items = new java.util.ArrayList<>();
+        Uri uri = new Uri.Builder()
+                .scheme(ContentResolver.SCHEME_CONTENT)
+                .authority(ToolbarConfig.MEDIA_PROVIDER_AUTHORITY)
+                .appendPath("recent")
+                .build();
+        try (Cursor cursor = context.getContentResolver().query(uri, null, null, null, null)) {
+            if (cursor == null) {
+                return items;
+            }
+            int uriColumn = cursor.getColumnIndexOrThrow(RecentMediaProvider.COL_CONTENT_URI);
+            int mimeColumn = cursor.getColumnIndexOrThrow(RecentMediaProvider.COL_MIME_TYPE);
+            int typeColumn = cursor.getColumnIndexOrThrow(RecentMediaProvider.COL_MEDIA_TYPE);
+            while (cursor.moveToNext()) {
+                Uri itemUri = Uri.parse(cursor.getString(uriColumn));
+                String mime = cursor.getString(mimeColumn);
+                boolean video = "video".equals(cursor.getString(typeColumn));
+                items.add(new RecentMediaItem(itemUri, mime, video));
+            }
+        } catch (Throwable t) {
+            log(Log.INFO, TAG, "failed to query recent media", t);
+        }
+        return items;
+    }
+
+    private boolean commitMediaContent(RecentMediaItem item) {
+        InputMethodService service = currentService;
+        if (service == null) {
+            return false;
+        }
+        InputConnection inputConnection = service.getCurrentInputConnection();
+        if (inputConnection == null) {
+            return false;
+        }
+        try {
+            ClipDescription description = new ClipDescription(
+                    item.video ? "OneMate video" : "OneMate image",
+                    new String[]{item.mimeType});
+            InputContentInfo contentInfo = new InputContentInfo(item.uri, description, null);
+            try {
+                contentInfo.requestPermission();
+            } catch (Throwable t) {
+                log(Log.DEBUG, TAG, "failed to request recent media permission " + item.uri, t);
+            }
+            boolean copied = copyMediaToClipboard(service, item);
+            Bundle opts = new Bundle();
+            boolean sent = inputConnection.commitContent(
+                    contentInfo,
+                    InputConnection.INPUT_CONTENT_GRANT_READ_URI_PERMISSION,
+                    opts);
+            log(Log.INFO, TAG, "commit recent media " + item.uri + " sent=" + sent + " copied=" + copied);
+            return sent || copied;
+        } catch (Throwable t) {
+            log(Log.INFO, TAG, "failed to commit recent media " + item.uri, t);
+            return false;
+        }
+    }
+
+    private boolean copyMediaToClipboard(Context context, RecentMediaItem item) {
+        try {
+            ClipboardManager clipboard =
+                    (ClipboardManager) context.getSystemService(Context.CLIPBOARD_SERVICE);
+            if (clipboard == null) {
+                return false;
+            }
+            ClipData clip = new ClipData(
+                    item.video ? "OneMate video" : "OneMate image",
+                    new String[]{item.mimeType},
+                    new ClipData.Item(item.uri));
+            clipboard.setPrimaryClip(clip);
+            log(Log.INFO, TAG, "copied recent media to clipboard " + item.uri);
+            return true;
+        } catch (Throwable t) {
+            log(Log.INFO, TAG, "failed to copy recent media to clipboard " + item.uri, t);
+            return false;
+        }
+    }
+
+    private void withHaptic(View view, Runnable action) {
+        view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
+        action.run();
+    }
+
+    private GradientDrawable roundRect(int color, int radius) {
+        GradientDrawable drawable = new GradientDrawable();
+        drawable.setColor(color);
+        drawable.setCornerRadius(radius);
+        return drawable;
     }
 
     private void registerSyntheticBeeBestEffort(
@@ -874,22 +1135,27 @@ public final class HoneyboardModule extends XposedModule {
     }
 
     private void injectSyntheticBee(Object beeWorld, ClassLoader classLoader, Object beesArg) {
-        if (!(beesArg instanceof java.util.List) || !shouldForceVisible(TEXT_EDITING_ID)) {
+        if (!(beesArg instanceof java.util.List) || !shouldInjectAnyOneMateBee()) {
             return;
         }
         java.util.List<Object> bees = (java.util.List<Object>) beesArg;
-        if (containsBeeId(bees, TEXT_EDITING_ID)) {
+        injectSyntheticBee(bees, beeWorld, classLoader, TEXT_EDITING_ID);
+        injectSyntheticBee(bees, beeWorld, classLoader, RECENT_MEDIA_ID);
+    }
+
+    private void injectSyntheticBee(
+            java.util.List<Object> bees, Object beeWorld, ClassLoader classLoader, String beeId) {
+        if (!shouldForceVisible(beeId) || containsBeeId(bees, beeId)) {
             return;
         }
-        Object bee = getOrCreateSyntheticBee(beeWorld, classLoader, TEXT_EDITING_ID);
-        if (bee == null) {
-            return;
-        }
-        try {
-            bees.add(bee);
-            log(Log.INFO, TAG, "injected synthetic bee into refresh list " + TEXT_EDITING_ID);
-        } catch (UnsupportedOperationException e) {
-            log(Log.DEBUG, TAG, "skip immutable bee refresh list " + TEXT_EDITING_ID, e);
+        Object bee = getOrCreateSyntheticBee(beeWorld, classLoader, beeId);
+        if (bee != null) {
+            try {
+                bees.add(bee);
+                log(Log.INFO, TAG, "injected synthetic bee into refresh list " + beeId);
+            } catch (UnsupportedOperationException e) {
+                log(Log.DEBUG, TAG, "skip immutable bee refresh list " + beeId, e);
+            }
         }
     }
 
@@ -930,15 +1196,22 @@ public final class HoneyboardModule extends XposedModule {
         }
     }
 
-    private java.util.List<?> listWithTextEditing(java.util.List<?> list, ClassLoader classLoader)
+    private java.util.List<?> listWithOneMateBees(java.util.List<?> list, ClassLoader classLoader)
             throws ReflectiveOperationException {
         if (list.isEmpty()) {
             return list;
         }
         java.util.ArrayList<Object> copy = new java.util.ArrayList<>(list);
-        removeBeeId(copy, SAMSUNG_TEXT_EDITING_ID);
         removeBeeId(copy, TEXT_EDITING_ID);
-        copy.add(0, newBeeTag(classLoader, TEXT_EDITING_ID));
+        removeBeeId(copy, RECENT_MEDIA_ID);
+        if (shouldForceVisible(TEXT_EDITING_ID)) {
+            removeBeeId(copy, SAMSUNG_TEXT_EDITING_ID);
+            copy.add(0, newBeeTag(classLoader, TEXT_EDITING_ID));
+        }
+        if (shouldForceVisible(RECENT_MEDIA_ID)) {
+            copy.add(shouldForceVisible(TEXT_EDITING_ID) ? 1 : 0,
+                    newBeeTag(classLoader, RECENT_MEDIA_ID));
+        }
         return copy;
     }
 
@@ -1010,7 +1283,7 @@ public final class HoneyboardModule extends XposedModule {
         try {
             Class<?> beeInterface = Class.forName(BEE_INTERFACE_CLASS, false, classLoader);
             Context context = honeyboardContext(beeWorld);
-            Object beeInfo = newBeeInfo(context, classLoader);
+            Object beeInfo = newBeeInfo(context, classLoader, beeId);
             InvocationHandler handler = new SyntheticBeeHandler(context, beeId, beeInfo);
             return Proxy.newProxyInstance(classLoader, new Class<?>[]{beeInterface}, handler);
         } catch (Throwable t) {
@@ -1030,7 +1303,8 @@ public final class HoneyboardModule extends XposedModule {
         return (Context) context;
     }
 
-    private Object newBeeInfo(Context context, ClassLoader classLoader) throws ReflectiveOperationException {
+    private Object newBeeInfo(Context context, ClassLoader classLoader, String beeId)
+            throws ReflectiveOperationException {
         int labelId = optionalResourceId(context, classLoader, "string", SAMSUNG_TEXT_EDITING_ID);
         if (labelId == 0) {
             labelId = optionalResourceId(context, classLoader, "string", "cursor_control_text");
@@ -1043,7 +1317,7 @@ public final class HoneyboardModule extends XposedModule {
         }
 
         Class<?> builderClass = Class.forName(BEE_INFO_BUILDER_CLASS, false, classLoader);
-        Icon icon = moduleIcon(context);
+        Icon icon = moduleIcon(context, beeId);
         Object builder;
         if (icon != null) {
             Constructor<?> builderConstructor = builderClass.getDeclaredConstructor(
@@ -1069,12 +1343,13 @@ public final class HoneyboardModule extends XposedModule {
             builderConstructor.setAccessible(true);
             builder = builderConstructor.newInstance(context, iconId, labelId);
         }
-        setStringField(builder, "f27135f", "Text editing");
-        setStringField(builder, "f6524f", "Text editing");
+        String label = RECENT_MEDIA_ID.equals(beeId) ? "Recent media" : "Text editing";
+        setStringField(builder, "f27135f", label);
+        setStringField(builder, "f6524f", label);
         setIntField(builder, "f27136g", labelId);
         setIntField(builder, "f6525g", labelId);
-        setStringField(builder, "f27137h", "Text editing");
-        setStringField(builder, "f6526h", "Text editing");
+        setStringField(builder, "f27137h", label);
+        setStringField(builder, "f6526h", label);
 
         Class<?> infoClass = Class.forName(BEE_INFO_CLASS, false, classLoader);
         Constructor<?> infoConstructor = infoClass.getDeclaredConstructor(builderClass);
@@ -1082,12 +1357,15 @@ public final class HoneyboardModule extends XposedModule {
         return infoConstructor.newInstance(builder);
     }
 
-    private Icon moduleIcon(Context context) {
+    private Icon moduleIcon(Context context, String beeId) {
         try {
             Context moduleContext = context.createPackageContext(
                     getModuleApplicationInfo().packageName, Context.CONTEXT_IGNORE_SECURITY);
+            String name = RECENT_MEDIA_ID.equals(beeId)
+                    ? "ic_toolbar_recent_media"
+                    : "ic_toolbar_text_edit_panel";
             int iconId = moduleContext.getResources().getIdentifier(
-                    "ic_toolbar_text_edit_panel", "drawable", moduleContext.getPackageName());
+                    name, "drawable", moduleContext.getPackageName());
             return iconId == 0 ? null : Icon.createWithResource(moduleContext, iconId);
         } catch (Throwable ignored) {
             return null;
@@ -1195,10 +1473,12 @@ public final class HoneyboardModule extends XposedModule {
     private final class TextEditingBoardCreatorHandler implements InvocationHandler {
         private final Context context;
         private final ClassLoader classLoader;
+        private final String boardId;
 
-        TextEditingBoardCreatorHandler(Context context, ClassLoader classLoader) {
+        TextEditingBoardCreatorHandler(Context context, ClassLoader classLoader, String boardId) {
             this.context = context;
             this.classLoader = classLoader;
+            this.boardId = boardId;
         }
 
         @Override
@@ -1218,7 +1498,7 @@ public final class HoneyboardModule extends XposedModule {
                 if (textEditingBoardRequester == null) {
                     textEditingBoardRequester = boardRequester;
                 }
-                return createTextEditingBoard(context, classLoader, boardRequester);
+                return createTextEditingBoard(context, classLoader, boardRequester, boardId);
             }
             return null;
         }
@@ -1227,11 +1507,13 @@ public final class HoneyboardModule extends XposedModule {
     private final class TextEditingBoardHandler implements InvocationHandler {
         private final Context context;
         private final Object boardRequester;
+        private final String boardId;
         private boolean isBound;
 
-        TextEditingBoardHandler(Context context, Object boardRequester) {
+        TextEditingBoardHandler(Context context, Object boardRequester, String boardId) {
             this.context = context;
             this.boardRequester = boardRequester;
+            this.boardId = boardId;
         }
 
         @Override
@@ -1247,10 +1529,13 @@ public final class HoneyboardModule extends XposedModule {
                 return "OneMateTextEditingBoard";
             }
             if ("getBoardId".equals(name)) {
-                return TEXT_EDITING_BOARD_ID;
+                return boardId;
             }
             if ("getBoardView".equals(name)) {
-                log(Log.INFO, TAG, "text editing board getBoardView");
+                log(Log.INFO, TAG, "OneMate board getBoardView " + boardId);
+                if (RECENT_MEDIA_BOARD_ID.equals(boardId)) {
+                    return buildRecentMediaBoardView(context);
+                }
                 return buildTextEditingBoardView(context, boardRequester);
             }
             if ("getCandidateView".equals(name)
@@ -1263,20 +1548,24 @@ public final class HoneyboardModule extends XposedModule {
             }
             if ("onBind".equals(name)) {
                 isBound = true;
-                log(Log.INFO, TAG, "text editing board onBind");
+                log(Log.INFO, TAG, "OneMate board onBind " + boardId);
                 return null;
             }
             if ("onUnbind".equals(name)) {
                 isBound = false;
-                log(Log.INFO, TAG, "text editing board onUnbind");
-                clearTextEditingState();
+                log(Log.INFO, TAG, "OneMate board onUnbind " + boardId);
+                if (TEXT_EDITING_BOARD_ID.equals(boardId)) {
+                    clearTextEditingState();
+                }
                 return null;
             }
             if ("getDumpKey".equals(name)) {
-                return "onemate_text_editing";
+                return boardId;
             }
             if ("getDumpName".equals(name)) {
-                return "OneMate Text Editing";
+                return RECENT_MEDIA_BOARD_ID.equals(boardId)
+                        ? "OneMate Recent Media"
+                        : "OneMate Text Editing";
             }
             if ("needRebindOnViewTypeChanged".equals(name)) {
                 return Boolean.TRUE;
@@ -1309,6 +1598,10 @@ public final class HoneyboardModule extends XposedModule {
 
         void clearSelection() {
             isSelected = false;
+        }
+
+        private String boardId() {
+            return RECENT_MEDIA_ID.equals(beeId) ? RECENT_MEDIA_BOARD_ID : TEXT_EDITING_BOARD_ID;
         }
 
         private void notifyChanged() {
@@ -1379,11 +1672,11 @@ public final class HoneyboardModule extends XposedModule {
                 return Boolean.TRUE;
             }
             if ("isSelected".equals(name)) {
-                return Boolean.valueOf(isSelected || isTextEditingBoardActive());
+                return Boolean.valueOf(isSelected || isNativeBoardActive(boardId()));
             }
             if ("finish".equals(name)) {
                 isSelected = false;
-                hideTextEditingBoard(null);
+                hideNativeBoard(null, boardId());
                 InputMethodService service = asInputMethodService(context);
                 if (service == null) {
                     service = currentService;
@@ -1398,12 +1691,13 @@ public final class HoneyboardModule extends XposedModule {
                 boolean shown = false;
                 boolean handled = false;
                 setHandwritingMode(false);
-                if (isTextEditingBoardActive()) {
-                    hideTextEditingBoard(null);
+                String boardId = boardId();
+                if (isNativeBoardActive(boardId)) {
+                    hideNativeBoard(null, boardId);
                     isSelected = false;
                     notifyChanged();
                     handled = true;
-                } else if (requestTextEditingBoard()) {
+                } else if (requestNativeBoard(boardId)) {
                     isSelected = true;
                     notifyChanged();
                     shown = true;
@@ -1579,6 +1873,20 @@ public final class HoneyboardModule extends XposedModule {
             this.button = button;
             this.selectedButton = selectedButton;
             this.text = text;
+        }
+    }
+
+    private static final class RecentMediaItem {
+        final Uri uri;
+        final String mimeType;
+        final boolean video;
+
+        RecentMediaItem(Uri uri, String mimeType, boolean video) {
+            this.uri = uri;
+            this.mimeType = mimeType == null || mimeType.isEmpty()
+                    ? (video ? "video/*" : "image/*")
+                    : mimeType;
+            this.video = video;
         }
     }
 
